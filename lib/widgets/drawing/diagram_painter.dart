@@ -19,7 +19,9 @@ class DiagramPainter extends CustomPainter {
     required this.background,
     required this.gridColor,
     required this.showGrid,
-    this.selected,
+    required this.selected,
+    required this.showHandles,
+    required this.marquee,
     required this.selectionColor,
   });
 
@@ -35,7 +37,13 @@ class DiagramPainter extends CustomPainter {
   final Color background;
   final Color gridColor;
   final bool showGrid;
-  final StrokeItem? selected;
+  final List<StrokeItem> selected;
+
+  /// Draw resize/rotate handles for a single selection.
+  final bool showHandles;
+
+  /// Rubber-band rectangle (world coords) while marquee-selecting.
+  final Rect? marquee;
   final Color selectionColor;
 
   @override
@@ -67,37 +75,107 @@ class DiagramPainter extends CustomPainter {
     }
     final a = active;
     if (a != null) paintStroke(canvas, a);
-    final sel = selected;
-    if (sel != null && sel.points.isNotEmpty) {
-      _drawBrackets(canvas, strokeBounds(sel), scale, selectionColor);
+    for (final s in selected) {
+      _drawSelectionOutline(canvas, s);
     }
+    if (showHandles && selected.length == 1) {
+      _drawSelectionHandles(canvas, selected.first);
+    }
+    final m = marquee;
+    if (m != null) _drawMarquee(canvas, m);
     canvas.restore();
   }
 
-  void _drawBrackets(Canvas canvas, Rect bounds, double scale, Color color) {
-    final r = bounds.inflate(5 / scale);
-    final arm = 10 / scale;
-    final path = Path();
-    void corner(double x, double y, double dx, double dy) {
-      path
-        ..moveTo(x + dx * arm, y)
-        ..lineTo(x, y)
-        ..lineTo(x, y + dy * arm);
-    }
-
-    corner(r.left, r.top, 1, 1);
-    corner(r.right, r.top, -1, 1);
-    corner(r.left, r.bottom, 1, -1);
-    corner(r.right, r.bottom, -1, -1);
+  /// Rotated outline of a selected stroke's frame.
+  void _drawSelectionOutline(Canvas canvas, StrokeItem s) {
+    final path = Path()..addPolygon(selectionBoxFor(s).corners(), true);
     canvas.drawPath(
       path,
       Paint()
-        ..color = color
+        ..color = selectionColor
         ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.6 / scale
-        ..strokeCap = StrokeCap.round
-        ..strokeJoin = StrokeJoin.round,
+        ..strokeWidth = 1.2 / scale,
     );
+  }
+
+  /// Excalidraw-style transform UI: 8 resize handles (corners + edge
+  /// midpoints) and a round rotate handle above the top edge. Sizes are
+  /// divided by [scale] so they stay constant on screen.
+  void _drawSelectionHandles(Canvas canvas, StrokeItem s) {
+    final box = selectionBoxFor(s);
+    final r = box.localRect;
+    final half = 4.5 / scale;
+    final fill = Paint()..color = const Color(0xFFFFFFFF);
+    final border = Paint()
+      ..color = selectionColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.2 / scale;
+
+    void handle(Offset world) {
+      canvas.drawRect(
+        Rect.fromCenter(center: world, width: half * 2, height: half * 2),
+        fill,
+      );
+      canvas.drawRect(
+        Rect.fromCenter(center: world, width: half * 2, height: half * 2),
+        border,
+      );
+    }
+
+    for (final c in box.corners()) {
+      handle(c);
+    }
+    handle(box.toWorld(Offset(r.center.dx, r.top)));
+    handle(box.toWorld(Offset(r.right, r.center.dy)));
+    handle(box.toWorld(Offset(r.center.dx, r.bottom)));
+    handle(box.toWorld(Offset(r.left, r.center.dy)));
+
+    final top = box.toWorld(Offset(r.center.dx, r.top));
+    final rot = box.toWorld(Offset(r.center.dx, r.top - 22 / scale));
+    canvas.drawLine(top, rot, border);
+    canvas.drawCircle(rot, 5 / scale, fill);
+    canvas.drawCircle(rot, 5 / scale, border);
+  }
+
+  /// Dashed rubber band with a faint fill, drawn while marquee-selecting.
+  void _drawMarquee(Canvas canvas, Rect m) {
+    canvas.drawRect(
+      m,
+      Paint()..color = selectionColor.withValues(alpha: 0.08),
+    );
+    final paint = Paint()
+      ..color = selectionColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1 / scale;
+    const on = 6.0, off = 4.0;
+    final pts = [
+      m.topLeft,
+      m.topRight,
+      m.bottomRight,
+      m.bottomLeft,
+      m.topLeft,
+    ];
+    for (var i = 0; i < pts.length - 1; i++) {
+      final a = pts[i];
+      final b = pts[i + 1];
+      final len = (b - a).distance;
+      if (len == 0) continue;
+      var drawing = true;
+      var remain = on;
+      var t = 0.0;
+      while (t < len - 1e-6) {
+        final take = math.min(remain, len - t);
+        if (drawing) {
+          canvas.drawLine(a + (b - a) * t, a + (b - a) * (t + take), paint);
+        }
+        t += take;
+        remain -= take;
+        if (remain <= 1e-6) {
+          remain = drawing ? off : on;
+          drawing = !drawing;
+        }
+      }
+    }
   }
 
   @override
@@ -112,6 +190,8 @@ class DiagramPainter extends CustomPainter {
         oldDelegate.gridColor != gridColor ||
         oldDelegate.showGrid != showGrid ||
         oldDelegate.selected != selected ||
+        oldDelegate.showHandles != showHandles ||
+        oldDelegate.marquee != marquee ||
         oldDelegate.selectionColor != selectionColor;
   }
 }

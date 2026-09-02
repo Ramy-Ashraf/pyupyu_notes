@@ -1,4 +1,6 @@
 import 'dart:io';
+import 'dart:math' as math;
+import 'dart:ui' show Canvas, PictureRecorder;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -9,6 +11,7 @@ import 'package:notes_app/models/format_span.dart';
 import 'package:notes_app/models/note.dart';
 import 'package:notes_app/models/stroke_item.dart';
 import 'package:notes_app/services/notes_store.dart';
+import 'package:notes_app/widgets/drawing/stroke_render.dart';
 
 Note _note({
   String id = 'n1',
@@ -58,6 +61,18 @@ void main() {
           width: 18,
           text: 'Start',
         ),
+        StrokeItem(
+          id: 's4',
+          type: StrokeType.diamond,
+          points: const [Offset(0, 0), Offset(40, 30)],
+          colorValue: 0xFF123456,
+          width: 3,
+          filled: true,
+          fillStyle: FillStyles.crossHatch,
+          dash: DashStyles.dashed,
+          seed: 12345,
+          angle: 0.5,
+        ),
       ],
       formats: const [FormatSpan(0, 5, FormatFlags.bold)],
     );
@@ -67,9 +82,14 @@ void main() {
     expect(restored.body, 'Title line\nsecond line');
     expect(restored.title, 'Title line');
     expect(restored.snippet, 'second line');
-    expect(restored.strokes.length, 3);
+    expect(restored.strokes.length, 4);
     expect(restored.strokes[1].filled, isTrue);
     expect(restored.strokes[2].text, 'Start');
+    expect(restored.strokes[3].type, StrokeType.diamond);
+    expect(restored.strokes[3].fillStyle, FillStyles.crossHatch);
+    expect(restored.strokes[3].dash, DashStyles.dashed);
+    expect(restored.strokes[3].seed, 12345);
+    expect(restored.strokes[3].angle, 0.5);
     expect(restored.formats.length, 1);
     expect(restored.formats[0].has(FormatFlags.bold), isTrue);
     expect(restored.hasDiagram, isTrue);
@@ -84,6 +104,67 @@ void main() {
     expect(note.title, 'New note');
     expect(note.snippet, '');
     expect(note.hasDiagram, isFalse);
+  });
+
+  test('rough renderer paints every stroke type and style', () {
+    final recorder = PictureRecorder();
+    final canvas = Canvas(recorder);
+    for (var i = 0; i < StrokeType.values.length; i++) {
+      final type = StrokeType.values[i];
+      final isText = type == StrokeType.text;
+      final isFreehand = type == StrokeType.pen || type == StrokeType.marker;
+      final stroke = StrokeItem(
+        id: 'r$i',
+        type: type,
+        points: isText ? const [Offset(0, 0)] : const [Offset(0, 0), Offset(60, 40)],
+        colorValue: 0xFF222222,
+        width: 3,
+        filled: !isText && !isFreehand,
+        fillStyle: FillStyles.crossHatch,
+        dash: DashStyles.dashed,
+        seed: i * 37 + 1,
+        text: isText ? 'Hi\nThere' : null,
+      );
+      paintStroke(canvas, stroke);
+      strokeHitTest(stroke, const Offset(30, 20), 4);
+    }
+    // Solid fill + dotted outline variants.
+    paintStroke(
+      canvas,
+      StrokeItem(
+        id: 'solid',
+        type: StrokeType.rectangle,
+        points: const [Offset(0, 0), Offset(50, 50)],
+        colorValue: 0xFF000000,
+        width: 4,
+        filled: true,
+        fillStyle: FillStyles.solid,
+        dash: DashStyles.dotted,
+        seed: 5,
+      ),
+    );
+    // Rotated strokes render and hit-test in world space. The local top
+    // edge midpoint (20, 0) rotates about the center (20, 10) onto a world
+    // point that must hit, while the hollow center must miss.
+    final rotated = StrokeItem(
+      id: 'rot',
+      type: StrokeType.rectangle,
+      points: const [Offset(0, 0), Offset(40, 20)],
+      colorValue: 0xFF000000,
+      width: 2,
+      seed: 9,
+      angle: math.pi / 4,
+    );
+    paintStroke(canvas, rotated);
+    final cos45 = math.cos(math.pi / 4);
+    final worldEdge = Offset(
+      20 + 0 * cos45 - (-10) * cos45,
+      10 + 0 * cos45 + (-10) * cos45,
+    );
+    expect(strokeHitTest(rotated, worldEdge, 2), isTrue);
+    expect(strokeHitTest(rotated, const Offset(20, 10), 2), isFalse);
+    expect(strokeHitTest(rotated, const Offset(-30, 10), 2), isFalse);
+    recorder.endRecording();
   });
 
   group('FormatTextController', () {
@@ -267,6 +348,22 @@ void main() {
       expect(composingOnly.fontWeight, isNull);
       expect(composingOnly.decoration, TextDecoration.underline);
     });
+  });
+
+  testWidgets('multi-line text label bounds cover every line',
+      (tester) async {
+    final s = StrokeItem(
+      id: 't',
+      type: StrokeType.text,
+      points: const [Offset(0, 0)],
+      colorValue: 0xFF000000,
+      width: 18,
+      text: 'One\nTwo\nThree',
+    );
+    final bounds = strokeBounds(s);
+    expect(bounds.width, greaterThan(0));
+    // Three lines at 18px with a 1.25 height factor are ~68px tall.
+    expect(bounds.height, greaterThan(60));
   });
 
   group('NotesController.duplicateNote', () {

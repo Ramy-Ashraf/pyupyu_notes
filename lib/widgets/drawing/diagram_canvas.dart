@@ -19,6 +19,9 @@ class _Op {
   final List<StrokeItem> after;
 }
 
+/// What a select-tool drag is currently doing.
+enum _SelectDrag { none, move, resize, rotate, marquee }
+
 /// Interactive diagram canvas for a note. Select/move/nudge, text labels,
 /// freehand pen/highlighter, line/rectangle/ellipse/arrow shapes
 /// (Shift-snapped), stroke eraser, pan + zoom (wheel, buttons or trackpad),
@@ -46,8 +49,17 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
       ? const Color(0xFFF5F5F5)
       : const Color(0xFF1F1F1F);
   double _width = 4;
-  bool _filled = false;
+  int _fillStyle = FillStyles.hachure;
+  int _dashStyle = DashStyles.solid;
   bool _showGrid = true;
+
+  // In-place text label editing (Excalidraw-style): a borderless field sits
+  // right on the canvas; Esc or a click elsewhere commits it.
+  double _labelSize = 18;
+  TextEditingController? _labelField;
+  FocusNode? _labelFocus;
+  Offset _labelWorld = Offset.zero;
+  String? _editingId;
 
   Offset _offset = Offset.zero;
   double _scale = 1;
@@ -65,10 +77,20 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
   Offset _pzBaseOffset = Offset.zero;
   double _pzLastScale = 1;
 
-  String? _selectedId;
-  StrokeItem? _moving;
-  StrokeItem? _movedCurrent;
-  Offset _moveStart = Offset.zero;
+  Set<String> _selectedIds = {};
+
+  // Select-tool drag state: move / resize / rotate / marquee.
+  _SelectDrag _drag = _SelectDrag.none;
+  List<StrokeItem> _dragStartList = const [];
+  Map<String, StrokeItem> _dragOrigMap = const {};
+  Offset _dragStartWorld = Offset.zero;
+  bool _dragMoved = false;
+  StrokeItem? _resizeOriginal;
+  int _resizeHandle = 0;
+  StrokeItem? _rotateOriginal;
+  Rect? _marquee;
+  Offset _marqueeStart = Offset.zero;
+  SystemMouseCursor? _hoverCursor;
 
   final List<_Op> _undoStack = [];
   final List<_Op> _redoStack = [];
@@ -108,8 +130,10 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
     return null;
   }
 
-  StrokeItem? get _selected =>
-      _selectedId == null ? null : _byId(_selectedId!);
+  List<StrokeItem> get _selectedStrokes => [
+        for (final s in widget.note.strokes)
+          if (_selectedIds.contains(s.id)) s,
+      ];
 
   StrokeItem? _topStrokeAt(Offset world) {
     for (final s in widget.note.strokes.reversed) {
@@ -119,17 +143,23 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
   }
 
   void _setTool(CanvasTool t) {
+    if (_labelField != null) _commitLabelEdit();
     setState(() {
       _tool = t;
-      _moving = null;
-      _movedCurrent = null;
-      if (t != CanvasTool.select) _selectedId = null;
+      _drag = _SelectDrag.none;
+      _marquee = null;
+      if (t != CanvasTool.select) _selectedIds = {};
     });
   }
 
   // ---- pointer handling ---------------------------------------------------
 
   void _onPointerDown(PointerDownEvent e) {
+    // The click that ends label editing does nothing else (like Excalidraw).
+    if (_labelField != null) {
+      _commitLabelEdit();
+      return;
+    }
     final local = e.localPosition;
     final tool = e.kind == PointerDeviceKind.invertedStylus
         ? CanvasTool.eraser
@@ -147,14 +177,58 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
     final w = _toWorld(local);
     switch (tool) {
       case CanvasTool.select:
-        final hit = _topStrokeAt(w);
-        if (hit == null) {
-          _selectedId = null;
-        } else {
-          _selectedId = hit.id;
-          _moving = hit;
-          _movedCurrent = null;
-          _moveStart = w;
+        _dragStartList = List<StrokeItem>.of(widget.note.strokes);
+        _dragMoved = false;
+        _resizeOriginal = null;
+        _rotateOriginal = null;
+        final single =
+            _selectedStrokes.length == 1 ? _selectedStrokes.first : null;
+        var handled = false;
+        if (single != null) {
+          final box = selectionBoxFor(single);
+          final pl = box.toLocal(w);
+          final tol = 7 / _scale;
+          final rotLocal = Offset(
+              box.localRect.center.dx, box.localRect.top - 22 / _scale);
+          if ((pl - rotLocal).distance <= tol) {
+            _drag = _SelectDrag.rotate;
+            _rotateOriginal = single;
+            handled = true;
+          } else {
+            final h = _handleAt(pl, box.localRect, tol);
+            if (h != null) {
+              _drag = _SelectDrag.resize;
+              _resizeOriginal = single;
+              _resizeHandle = h;
+              handled = true;
+            }
+          }
+        }
+        if (!handled) {
+          final hit = _topStrokeAt(w);
+          if (hit != null && _shiftHeld && _selectedIds.contains(hit.id)) {
+            // Shift-click removes from the selection; no drag starts.
+            _selectedIds = {..._selectedIds}..remove(hit.id);
+            _drag = _SelectDrag.none;
+          } else if (hit != null) {
+            if (_shiftHeld) {
+              _selectedIds = {..._selectedIds, hit.id};
+            } else if (!_selectedIds.contains(hit.id)) {
+              _selectedIds = {hit.id};
+            }
+            _startMoveDrag(w);
+          } else if (single != null &&
+              selectionBoxFor(single).localRect
+                  .contains(selectionBoxFor(single).toLocal(w))) {
+            // Dragging anywhere inside the single-selection box moves it.
+            _startMoveDrag(w);
+          } else {
+            // Empty space: rubber-band marquee (clears the selection).
+            _drag = _SelectDrag.marquee;
+            _marqueeStart = w;
+            _marquee = Rect.fromPoints(w, w);
+            _selectedIds = {};
+          }
         }
       case CanvasTool.pan:
         break;
@@ -168,6 +242,7 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
           points: [w],
           colorValue: _ink.toARGB32(),
           width: _width,
+          seed: _newSeed(),
         );
       case CanvasTool.eraser:
         _erased.clear();
@@ -175,6 +250,7 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
       case CanvasTool.line:
       case CanvasTool.rectangle:
       case CanvasTool.ellipse:
+      case CanvasTool.diamond:
       case CanvasTool.arrow:
         _active = StrokeItem(
           id: _newId(),
@@ -182,12 +258,18 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
             CanvasTool.line => StrokeType.line,
             CanvasTool.rectangle => StrokeType.rectangle,
             CanvasTool.ellipse => StrokeType.ellipse,
+            CanvasTool.diamond => StrokeType.diamond,
             _ => StrokeType.arrow,
           },
           points: [w, w],
           colorValue: _ink.toARGB32(),
           width: _width,
-          filled: _filled,
+          filled: _fillStyle >= 0 &&
+              tool != CanvasTool.line &&
+              tool != CanvasTool.arrow,
+          fillStyle: math.max(_fillStyle, 0),
+          dash: _dashStyle,
+          seed: _newSeed(),
         );
     }
     setState(() {});
@@ -201,12 +283,32 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
     }
     final local = e.localPosition;
 
-    if (_moving != null && _tool == CanvasTool.select) {
+    if (_tool == CanvasTool.select && _drag != _SelectDrag.none) {
       final w = _toWorld(local);
-      final delta = w - _moveStart;
-      final moved = _translated(_moving!, delta);
-      _movedCurrent = moved;
-      _replaceStroke(_moving!, moved);
+      switch (_drag) {
+        case _SelectDrag.move:
+          final delta = w - _dragStartWorld;
+          if (delta.distance > 2 / _scale) _dragMoved = true;
+          widget.controller.setStrokes(widget.note, [
+            for (final s in _dragStartList)
+              _dragOrigMap[s.id] != null
+                  ? _translated(_dragOrigMap[s.id]!, delta)
+                  : s,
+          ]);
+        case _SelectDrag.resize:
+          _applyResize(w);
+        case _SelectDrag.rotate:
+          _applyRotate(w);
+        case _SelectDrag.marquee:
+          _marquee = Rect.fromPoints(_marqueeStart, w);
+          _selectedIds = {
+            for (final s in widget.note.strokes)
+              if (strokeBounds(s).overlaps(_marquee!)) s.id,
+          };
+        case _SelectDrag.none:
+          break;
+      }
+      setState(() {});
       return;
     }
 
@@ -253,7 +355,9 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
       return s0 +
           Offset(math.cos(angle) * len, math.sin(angle) * len);
     }
-    if (type == StrokeType.rectangle || type == StrokeType.ellipse) {
+    if (type == StrokeType.rectangle ||
+        type == StrokeType.ellipse ||
+        type == StrokeType.diamond) {
       final dx = w.dx - s0.dx;
       final dy = w.dy - s0.dy;
       final m = math.max(dx.abs(), dy.abs());
@@ -267,18 +371,23 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
       _panning = false;
       return;
     }
-    if (_moving != null) {
-      final before = _moving!;
-      final after = _movedCurrent;
-      _moving = null;
-      _movedCurrent = null;
-      if (after != null) _commitReplace(before, after);
+    if (_tool == CanvasTool.select && _drag != _SelectDrag.none) {
+      // Commit one undo step from the drag-start snapshot. This covers
+      // moves, resizes and rotations (which were applied live) and also
+      // fixes undo for plain moves.
+      if (_drag != _SelectDrag.marquee && _dragMoved) {
+        _pushOp(_dragStartList, List.of(widget.note.strokes));
+      }
+      _drag = _SelectDrag.none;
+      _marquee = null;
+      _resizeOriginal = null;
+      _rotateOriginal = null;
       setState(() {});
       return;
     }
     if (_tool == CanvasTool.text &&
         (e.localPosition - _downLocal).distance < 5) {
-      _openTextLabel(at: _toWorld(e.localPosition));
+      _startLabelEdit(at: _toWorld(e.localPosition));
       return;
     }
     final active = _active;
@@ -299,9 +408,17 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
 
   void _onPointerCancel(PointerCancelEvent e) {
     _panning = false;
-    _moving = null;
-    _movedCurrent = null;
     _active = null;
+    if (_drag != _SelectDrag.none &&
+        _drag != _SelectDrag.marquee &&
+        _dragMoved) {
+      // Keep what was applied live, but make it undoable.
+      _pushOp(_dragStartList, List.of(widget.note.strokes));
+    }
+    _drag = _SelectDrag.none;
+    _marquee = null;
+    _resizeOriginal = null;
+    _rotateOriginal = null;
     if (_erased.isNotEmpty) {
       _commitRemoved(List.of(_erased));
       _erased.clear();
@@ -352,15 +469,262 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
 
   // ---- editing ------------------------------------------------------------
 
-  StrokeItem _translated(StrokeItem s, Offset delta) => StrokeItem(
-        id: s.id,
+  /// Copy of a stroke, optionally with a new id, translation and angle.
+  /// Carries every style field so transforms never reset looks.
+  StrokeItem _clone(StrokeItem s, {String? id, Offset? delta, double? angle}) =>
+      StrokeItem(
+        id: id ?? s.id,
         type: s.type,
-        points: [for (final p in s.points) p + delta],
+        points: [
+          for (final p in s.points) delta == null ? p : p + delta,
+        ],
         colorValue: s.colorValue,
         width: s.width,
         filled: s.filled,
+        fillStyle: s.fillStyle,
+        dash: s.dash,
+        seed: s.seed,
+        angle: angle ?? s.angle,
         text: s.text,
       );
+
+  StrokeItem _translated(StrokeItem s, Offset delta) =>
+      _clone(s, delta: delta);
+
+  void _startMoveDrag(Offset w) {
+    _drag = _SelectDrag.move;
+    _dragStartWorld = w;
+    _dragOrigMap = {
+      for (final s in _dragStartList)
+        if (_selectedIds.contains(s.id)) s.id: s,
+    };
+  }
+
+  /// Resize handle indices: 0..3 corners (TL, TR, BR, BL), 4..7 edges
+  /// (top, right, bottom, left). Returns the handle under local point
+  /// [pl] within [tol], or null.
+  int? _handleAt(Offset pl, Rect r, double tol) {
+    int? best;
+    var bestD = tol;
+    final candidates = <int, Offset>{
+      0: r.topLeft,
+      1: r.topRight,
+      2: r.bottomRight,
+      3: r.bottomLeft,
+      4: r.topCenter,
+      5: r.centerRight,
+      6: r.bottomCenter,
+      7: r.centerLeft,
+    };
+    for (final e in candidates.entries) {
+      final d = (pl - e.value).distance;
+      if (d <= bestD) {
+        bestD = d;
+        best = e.key;
+      }
+    }
+    return best;
+  }
+
+  /// Resizes the stroke being transformed: maps its local frame from the
+  /// original rect to a new rect following the dragged handle. Handles are
+  /// hit-tested in the stroke's rotated frame, so resizing a rotated
+  /// element scales along its own axes (like Excalidraw). Shift keeps the
+  /// aspect ratio on corner handles.
+  void _applyResize(Offset w) {
+    final orig = _resizeOriginal;
+    if (orig == null) return;
+    final box = selectionBoxFor(orig);
+    final r = box.localRect;
+    final pl = box.toLocal(w);
+    final h = _resizeHandle;
+    Rect to;
+    if (h <= 3) {
+      final anchors = [r.bottomRight, r.bottomLeft, r.topLeft, r.topRight];
+      final anchor = anchors[h];
+      to = Rect.fromPoints(anchor, pl);
+      if (_shiftHeld && r.width > 0 && r.height > 0) {
+        final sx = to.width / r.width;
+        final sy = to.height / r.height;
+        final s = math.max(sx, sy);
+        final dx = pl.dx >= anchor.dx ? 1.0 : -1.0;
+        final dy = pl.dy >= anchor.dy ? 1.0 : -1.0;
+        to = Rect.fromLTWH(
+          dx > 0 ? anchor.dx : anchor.dx - r.width * s,
+          dy > 0 ? anchor.dy : anchor.dy - r.height * s,
+          r.width * s,
+          r.height * s,
+        );
+      }
+    } else {
+      to = switch (h) {
+        4 => Rect.fromLTRB(r.left, pl.dy, r.right, r.bottom),
+        5 => Rect.fromLTRB(r.left, r.top, pl.dx, r.bottom),
+        6 => Rect.fromLTRB(r.left, r.top, r.right, pl.dy),
+        _ => Rect.fromLTRB(pl.dx, r.top, r.right, r.bottom),
+      };
+    }
+    if (to.width.abs() < 1e-3 || to.height.abs() < 1e-3) return;
+    _dragMoved = true;
+    _replaceStroke(orig, _scaledStroke(orig, r, to));
+  }
+
+  /// Rotates the stroke being transformed; Shift snaps to 15° steps.
+  void _applyRotate(Offset w) {
+    final orig = _rotateOriginal;
+    if (orig == null) return;
+    final c = strokeLocalBounds(orig).center;
+    var angle = math.atan2(w.dy - c.dy, w.dx - c.dx) + math.pi / 2;
+    if (_shiftHeld) {
+      final step = math.pi / 12;
+      angle = (angle / step).roundToDouble() * step;
+    }
+    while (angle > math.pi) {
+      angle -= 2 * math.pi;
+    }
+    while (angle <= -math.pi) {
+      angle += 2 * math.pi;
+    }
+    if ((angle - orig.angle).abs() < 0.001) return;
+    _dragMoved = true;
+    _replaceStroke(orig, _clone(orig, angle: angle));
+  }
+
+  /// Maps a stroke's geometry from local frame [from] to [to] (both in the
+  /// stroke's unrotated frame). Negative extents flip the geometry. Stroke
+  /// width scales with the average axis; text scales its font size instead.
+  StrokeItem _scaledStroke(StrokeItem s, Rect from, Rect to) {
+    final sx = to.width / math.max(from.width, 1e-6);
+    final sy = to.height / math.max(from.height, 1e-6);
+    final isText = s.type == StrokeType.text;
+    final newWidth = isText
+        ? (s.width * sy.abs()).clamp(8.0, 128.0).toDouble()
+        : (s.width * (sx.abs() + sy.abs()) / 2).clamp(0.5, 64.0).toDouble();
+    return StrokeItem(
+      id: s.id,
+      type: s.type,
+      points: [
+        for (final p in s.points)
+          Offset(
+            to.left + (p.dx - from.left) * sx,
+            to.top + (p.dy - from.top) * sy,
+          ),
+      ],
+      colorValue: s.colorValue,
+      width: newWidth,
+      filled: s.filled,
+      fillStyle: s.fillStyle,
+      dash: s.dash,
+      seed: s.seed,
+      angle: s.angle,
+      text: s.text,
+    );
+  }
+
+  /// Resize/rotate cursors when hovering over transform handles.
+  void _onHover(PointerEvent e) {
+    SystemMouseCursor? c;
+    if (_tool == CanvasTool.select &&
+        _drag == _SelectDrag.none &&
+        _labelField == null &&
+        _selectedStrokes.length == 1) {
+      final single = _selectedStrokes.first;
+      final box = selectionBoxFor(single);
+      final pl = box.toLocal(_toWorld(e.localPosition));
+      final tol = 7 / _scale;
+      final rotLocal = Offset(
+          box.localRect.center.dx, box.localRect.top - 22 / _scale);
+      if ((pl - rotLocal).distance <= tol) {
+        c = SystemMouseCursors.grab;
+      } else {
+        c = switch (_handleAt(pl, box.localRect, tol)) {
+          0 || 2 => SystemMouseCursors.resizeUpLeftDownRight,
+          1 || 3 => SystemMouseCursors.resizeUpRightDownLeft,
+          4 || 6 => SystemMouseCursors.resizeUpDown,
+          5 || 7 => SystemMouseCursors.resizeLeftRight,
+          _ => null,
+        };
+      }
+    }
+    if (c != _hoverCursor) setState(() => _hoverCursor = c);
+  }
+
+  /// Restyles every selected stroke in one undo step (like Excalidraw's
+  /// selection style panel).
+  void _applyToSelection({
+    int? colorValue,
+    double? width,
+    int? dash,
+    int? fillStyle,
+    double? fontSize,
+  }) {
+    if (_selectedIds.isEmpty) return;
+    final before = List<StrokeItem>.of(widget.note.strokes);
+    var changed = false;
+    final after = <StrokeItem>[];
+    for (final s in before) {
+      if (!_selectedIds.contains(s.id)) {
+        after.add(s);
+        continue;
+      }
+      final updated = _restyled(
+        s,
+        colorValue: colorValue,
+        width: width,
+        dash: dash,
+        fillStyle: fillStyle,
+        fontSize: fontSize,
+      );
+      if (!identical(updated, s)) changed = true;
+      after.add(updated);
+    }
+    if (!changed) return;
+    _pushOp(before, after);
+    setState(() {});
+  }
+
+  StrokeItem _restyled(
+    StrokeItem s, {
+    int? colorValue,
+    double? width,
+    int? dash,
+    int? fillStyle,
+    double? fontSize,
+  }) {
+    final isShape = s.type != StrokeType.pen &&
+        s.type != StrokeType.marker &&
+        s.type != StrokeType.text;
+    final closedShape = s.type == StrokeType.rectangle ||
+        s.type == StrokeType.ellipse ||
+        s.type == StrokeType.diamond;
+    // For text labels [width]/[fontSize] is the font size.
+    final newWidth = s.type == StrokeType.text
+        ? (fontSize ?? s.width)
+        : (width ?? s.width);
+    final updated = StrokeItem(
+      id: s.id,
+      type: s.type,
+      points: List.of(s.points),
+      width: newWidth,
+      colorValue: colorValue ?? s.colorValue,
+      filled: fillStyle == null || !closedShape ? s.filled : fillStyle >= 0,
+      fillStyle: fillStyle == null || !closedShape
+          ? s.fillStyle
+          : math.max(fillStyle, 0),
+      dash: dash == null || !isShape ? s.dash : dash,
+      seed: s.seed,
+      angle: s.angle,
+      text: s.text,
+    );
+    if (updated.colorValue == s.colorValue &&
+        updated.width == s.width &&
+        updated.filled == s.filled &&
+        updated.fillStyle == s.fillStyle &&
+        updated.dash == s.dash) {
+      return s;
+    }
+    return updated;
+  }
 
   void _replaceStroke(StrokeItem before, StrokeItem after) {
     final list = [
@@ -405,9 +769,18 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
   }
 
   void _commitReplace(StrokeItem before, StrokeItem after) {
-    final list = List<StrokeItem>.of(widget.note.strokes);
-    _pushOp(list, [
-      for (final s in list) s.id == before.id ? after : s,
+    final current = List<StrokeItem>.of(widget.note.strokes);
+    if (current.any((s) => identical(s, after))) {
+      // [after] was applied live during a drag; reconstruct the pre-change
+      // state so undo restores the original stroke.
+      final beforeList = [
+        for (final s in current) identical(s, after) ? before : s,
+      ];
+      _pushOp(beforeList, current);
+      return;
+    }
+    _pushOp(current, [
+      for (final s in current) s.id == before.id ? after : s,
     ]);
   }
 
@@ -429,7 +802,7 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
 
   void _clear() {
     if (widget.note.strokes.isEmpty) return;
-    _selectedId = null;
+    _selectedIds = {};
     _commitRemoved(List.of(widget.note.strokes));
     setState(() {});
   }
@@ -462,92 +835,162 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
   }
 
   void _deselect() {
-    if (_selectedId == null) return;
-    setState(() => _selectedId = null);
+    if (_selectedIds.isEmpty && _marquee == null) return;
+    setState(() {
+      _selectedIds = {};
+      _marquee = null;
+    });
   }
 
   void _deleteSelected() {
-    final s = _selected;
-    if (s == null) return;
-    _selectedId = null;
-    _commitRemoved([s]);
+    final victims = _selectedStrokes;
+    if (victims.isEmpty) return;
+    _selectedIds = {};
+    _commitRemoved(victims);
     setState(() {});
   }
 
   void _duplicateSelected() {
-    final s = _selected;
-    if (s == null) return;
-    final moved = _translated(s, const Offset(20, 20));
-    final copy = StrokeItem(
-      id: _newId(),
-      type: moved.type,
-      points: moved.points,
-      colorValue: moved.colorValue,
-      width: moved.width,
-      filled: moved.filled,
-      text: moved.text,
-    );
-    _commitAdded(copy);
-    _selectedId = copy.id;
+    final sel = _selectedStrokes;
+    if (sel.isEmpty) return;
+    final before = List<StrokeItem>.of(widget.note.strokes);
+    final stamp = DateTime.now().microsecondsSinceEpoch;
+    final copies = <StrokeItem>[];
+    for (var i = 0; i < sel.length; i++) {
+      copies.add(_clone(
+        _translated(sel[i], const Offset(20, 20)),
+        id: 's${stamp}_$i',
+      ));
+    }
+    _pushOp(before, [...before, ...copies]);
+    _selectedIds = {for (final c in copies) c.id};
     setState(() {});
   }
 
   void _reorderSelected(bool front) {
-    final s = _selected;
-    if (s == null) return;
-    final list = List<StrokeItem>.of(widget.note.strokes)
-      ..removeWhere((x) => x.id == s.id);
-    front ? list.add(s) : list.insert(0, s);
+    final ids = _selectedIds;
+    if (ids.isEmpty) return;
     final before = List<StrokeItem>.of(widget.note.strokes);
-    _pushOp(before, list);
+    final moving = [for (final s in before) if (ids.contains(s.id)) s];
+    final rest = [for (final s in before) if (!ids.contains(s.id)) s];
+    _pushOp(before, front ? [...rest, ...moving] : [...moving, ...rest]);
     setState(() {});
   }
 
   void _nudge(int dx, int dy) {
-    final s = _selected;
-    if (s == null) return;
+    if (_selectedIds.isEmpty) return;
     final step = _shiftHeld ? 10.0 : 1.0;
-    _commitReplace(s, _translated(s, Offset(dx * step, dy * step)));
+    final delta = Offset(dx * step, dy * step);
+    final before = List<StrokeItem>.of(widget.note.strokes);
+    _pushOp(before, [
+      for (final s in before)
+        _selectedIds.contains(s.id) ? _translated(s, delta) : s,
+    ]);
     setState(() {});
   }
 
-  Future<void> _openTextLabel({StrokeItem? existing, Offset? at}) async {
-    final result = await showLabelDialog(
-      context,
-      initialText: existing?.text ?? '',
-      initialSize: existing?.width ?? 18,
-    );
-    if (result == null) return;
-    if (existing != null) {
-      if (result.text.trim().isEmpty) {
-        _selectedId = null;
+  // ---- in-place text labels -----------------------------------------------
+
+  /// Opens a borderless text field on the canvas at [at] (new label) or over
+  /// [existing] (editing). Committing writes a [StrokeType.text] stroke.
+  void _startLabelEdit({StrokeItem? existing, Offset? at}) {
+    if (_labelField != null) _commitLabelEdit();
+    setState(() {
+      _editingId = existing?.id;
+      _labelWorld = existing?.points.first ?? at ?? Offset.zero;
+      _labelSize = existing?.width ?? _labelSize;
+      _labelFocus = FocusNode();
+      _labelField = TextEditingController(text: existing?.text ?? '')
+        ..addListener(_onLabelEdited);
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _labelFocus?.requestFocus();
+    });
+  }
+
+  void _onLabelEdited() {
+    if (mounted) setState(() {}); // re-measure the field's width
+  }
+
+  /// Writes the edited label back (empty text discards, or deletes when
+  /// editing an existing label) and closes the in-place field.
+  void _commitLabelEdit() {
+    final field = _labelField;
+    if (field == null) return;
+    final text = field.text;
+    final editingId = _editingId;
+    final size = _labelSize;
+    field.removeListener(_onLabelEdited);
+    field.dispose();
+    _labelFocus?.dispose();
+    _labelField = null;
+    _labelFocus = null;
+    _editingId = null;
+
+    final existing = editingId == null ? null : _byId(editingId);
+    if (text.trim().isEmpty) {
+      if (existing != null) {
+        _selectedIds = {};
         _commitRemoved([existing]);
-      } else {
-        final updated = StrokeItem(
-          id: existing.id,
-          type: StrokeType.text,
-          points: existing.points,
-          colorValue: existing.colorValue,
-          width: result.size,
-          text: result.text,
-        );
-        _commitReplace(existing, updated);
-        _selectedId = updated.id;
       }
+      setState(() {});
+      return;
+    }
+    if (existing != null) {
+      final updated = StrokeItem(
+        id: existing.id,
+        type: StrokeType.text,
+        points: existing.points,
+        colorValue: existing.colorValue,
+        width: size,
+        text: text,
+      );
+      _commitReplace(existing, updated);
+      _selectedIds = {updated.id};
     } else {
-      if (result.text.trim().isEmpty || at == null) return;
       final stroke = StrokeItem(
         id: _newId(),
         type: StrokeType.text,
-        points: [at],
+        points: [_labelWorld],
         colorValue: _ink.toARGB32(),
-        width: result.size,
-        text: result.text,
+        width: size,
+        text: text,
       );
       _commitAdded(stroke);
-      _selectedId = stroke.id;
+      _selectedIds = {stroke.id};
     }
     setState(() {});
+  }
+
+  /// Runs a toolbar action, committing any in-place label edit first.
+  void _withCommit(VoidCallback action) {
+    if (_labelField != null) _commitLabelEdit();
+    action();
+  }
+
+  /// Screen-space width of the in-place field so it hugs the typed text.
+  double get _labelFieldWidth {
+    final field = _labelField;
+    if (field == null) return 40;
+    final tp = TextPainter(
+      text: TextSpan(
+        text: field.text.isEmpty ? ' ' : field.text,
+        style: TextStyle(
+          fontSize: _labelSize * _scale,
+          height: 1.25,
+          fontFamily: 'Segoe Print',
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout();
+    return math.max(tp.width, 24 * _scale) + 10;
+  }
+
+  /// Sets the font size used for new labels and restyles the selected
+  /// text labels, if any.
+  void _changeLabelSize(double size) {
+    setState(() => _labelSize = size);
+    _applyToSelection(fontSize: size);
   }
 
   void _onSecondaryTapUp(TapUpDetails d) {
@@ -556,7 +999,9 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
       _deselect();
       return;
     }
-    setState(() => _selectedId = hit.id);
+    if (!_selectedIds.contains(hit.id)) {
+      _selectedIds = {hit.id};
+    }
     final overlay =
         Overlay.of(context).context.findRenderObject() as RenderBox;
     showMenu<String>(
@@ -596,7 +1041,7 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
     ).then((value) {
       switch (value) {
         case 'edit':
-          _openTextLabel(existing: hit);
+          _startLabelEdit(existing: hit);
         case 'duplicate':
           _duplicateSelected();
         case 'front':
@@ -612,6 +1057,9 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
   String _newId() =>
       's${DateTime.now().microsecondsSinceEpoch}${_undoStack.length}';
 
+  /// Seed for the sketchy rendering; stable once the stroke is created.
+  int _newSeed() => math.Random().nextInt(1 << 30);
+
   // ---- build --------------------------------------------------------------
 
   @override
@@ -619,11 +1067,16 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
     final dark = Theme.of(context).brightness == Brightness.dark;
     final pal = paletteFor(widget.note.colorIndex, dark);
     final note = widget.note;
-    final selected = _selected;
+    final selectedStrokes = _selectedStrokes;
     final scheme = Theme.of(context).colorScheme;
 
+    final editing = _labelField != null;
     return CallbackShortcuts(
-      bindings: {
+      // While a text label is being edited, typing keys (Ctrl+Z, Delete…)
+      // must reach the text field, not the canvas shortcuts.
+      bindings: editing
+          ? const <ShortcutActivator, VoidCallback>{}
+          : {
         const SingleActivator(LogicalKeyboardKey.keyZ, control: true): _undo,
         const SingleActivator(LogicalKeyboardKey.keyY, control: true): _redo,
         const SingleActivator(LogicalKeyboardKey.keyZ, control: true,
@@ -637,13 +1090,14 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
         const SingleActivator(LogicalKeyboardKey.arrowDown): () => _nudge(0, 1),
         const SingleActivator(LogicalKeyboardKey.arrowLeft): () => _nudge(-1, 0),
         const SingleActivator(LogicalKeyboardKey.arrowRight): () => _nudge(1, 0),
-      },
+        },
       child: Focus(
         autofocus: true,
         child: LayoutBuilder(
           builder: (context, constraints) {
             _viewSize = constraints.biggest;
-            return Stack(
+            return ClipRect(
+              child: Stack(
               children: [
                 Positioned.fill(
                   child: GestureDetector(
@@ -651,7 +1105,10 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
                     onDoubleTapDown: (d) {
                       final hit = _topStrokeAt(_toWorld(d.localPosition));
                       if (hit != null && hit.type == StrokeType.text) {
-                        _openTextLabel(existing: hit);
+                        _startLabelEdit(existing: hit);
+                      } else if (hit == null) {
+                        // Excalidraw-style: double-click empty space to add text.
+                        _startLabelEdit(at: _toWorld(d.localPosition));
                       }
                     },
                     onDoubleTap: () {},
@@ -664,7 +1121,8 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
                       onPointerPanZoomStart: _onPanZoomStart,
                       onPointerPanZoomUpdate: _onPanZoomUpdate,
                       child: MouseRegion(
-                        cursor: _cursorFor(_tool),
+                        cursor: _hoverCursor ?? _cursorFor(_tool),
+                        onHover: _onHover,
                         // Clip so strokes never paint over neighboring panes.
                         child: ClipRect(
                           child: CustomPaint(
@@ -682,7 +1140,10 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
                               gridColor:
                                   scheme.onSurface.withValues(alpha: 0.15),
                               showGrid: _showGrid,
-                              selected: selected,
+                              selected: selectedStrokes,
+                              showHandles: selectedStrokes.length == 1 &&
+                                  _drag != _SelectDrag.marquee,
+                              marquee: _marquee,
                               selectionColor: scheme.primary,
                             ),
                             child: const SizedBox.expand(),
@@ -705,7 +1166,7 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
                                     .withValues(alpha: 0.25)),
                             const SizedBox(height: 8),
                             Text(
-                              'Draw here — pick a tool below',
+                              'Draw here — pick a tool on the left',
                               style: TextStyle(
                                 fontSize: 13,
                                 color: noteTextColor(dark)
@@ -718,27 +1179,59 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
                     ),
                   ),
                 Positioned(
-                  top: 10,
-                  right: 14,
-                  child: IgnorePointer(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: scheme.surfaceContainerHigh.withValues(
-                            alpha: 0.85),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Text(
-                        '${(_scale * 100).round()}%',
-                        style: TextStyle(
-                          fontSize: 11,
-                          color: scheme.onSurfaceVariant,
+                  left: 12,
+                  top: 12,
+                  child: DiagramToolPalette(
+                    tool: _tool,
+                    onToolSelected: _setTool,
+                    dark: dark,
+                  ),
+                ),
+                if (_labelField != null)
+                  Positioned(
+                    left: _offset.dx + _labelWorld.dx * _scale,
+                    top: _offset.dy + _labelWorld.dy * _scale,
+                    child: Material(
+                      type: MaterialType.transparency,
+                      child: Focus(
+                        onKeyEvent: (node, event) {
+                          if (event is KeyDownEvent &&
+                              event.logicalKey == LogicalKeyboardKey.escape) {
+                            _commitLabelEdit();
+                            return KeyEventResult.handled;
+                          }
+                          return KeyEventResult.ignored;
+                        },
+                        child: SizedBox(
+                          width: _labelFieldWidth,
+                          child: TextField(
+                            controller: _labelField,
+                            focusNode: _labelFocus,
+                            maxLines: null,
+                            minLines: 1,
+                            style: TextStyle(
+                              fontSize: _labelSize * _scale,
+                              height: 1.25,
+                              color: _ink,
+                              fontFamily: 'Segoe Print',
+                            ),
+                            cursorColor: _ink,
+                            decoration: InputDecoration(
+                              border: InputBorder.none,
+                              isDense: true,
+                              contentPadding: EdgeInsets.zero,
+                              hintText: 'Type…',
+                              hintStyle: TextStyle(
+                                fontSize: _labelSize * _scale,
+                                color: _ink.withValues(alpha: 0.4),
+                                fontFamily: 'Segoe Print',
+                              ),
+                            ),
+                          ),
                         ),
                       ),
                     ),
                   ),
-                ),
                 Positioned(
                   left: 12,
                   right: 12,
@@ -746,42 +1239,71 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
                   child: Align(
                     alignment: Alignment.bottomCenter,
                     child: DiagramToolbar(
-                      tool: _tool,
-                      onToolSelected: _setTool,
-                      ink: _ink,
-                      onInkSelected: (c) => setState(() => _ink = c),
-                      strokeWidth: _width,
-                      onStrokeWidthSelected: (w) =>
-                          setState(() => _width = w),
-                      filled: _filled,
-                      onFilledChanged: (f) => setState(() => _filled = f),
+                      zoom: _scale,
                       canUndo: _undoStack.isNotEmpty,
-                      onUndo: _undo,
+                      onUndo: () => _withCommit(_undo),
                       canRedo: _redoStack.isNotEmpty,
-                      onRedo: _redo,
+                      onRedo: () => _withCommit(_redo),
+                      hasSelection: selectedStrokes.isNotEmpty,
+                      onDuplicateSelection: () =>
+                          _withCommit(_duplicateSelected),
+                      onDeleteSelection: () => _withCommit(_deleteSelected),
+                      ink: _ink,
+                      onInkSelected: (c) {
+                        setState(() => _ink = c);
+                        _applyToSelection(colorValue: c.toARGB32());
+                      },
+                      strokeWidth: _width,
+                      onStrokeWidthSelected: (w) {
+                        setState(() => _width = w);
+                        _applyToSelection(width: w);
+                      },
+                      fillStyle: _fillStyle,
+                      onFillStyleSelected: (f) {
+                        setState(() => _fillStyle = f);
+                        _applyToSelection(fillStyle: f);
+                      },
+                      dashStyle: _dashStyle,
+                      onDashStyleSelected: (d) {
+                        setState(() => _dashStyle = d);
+                        _applyToSelection(dash: d);
+                      },
+                      labelSize:
+                          selectedStrokes.length == 1 &&
+                                  selectedStrokes.first.type ==
+                                      StrokeType.text
+                              ? selectedStrokes.first.width
+                              : _labelSize,
+                      onLabelSizeSelected: _changeLabelSize,
                       showGrid: _showGrid,
                       onToggleGrid: () =>
                           setState(() => _showGrid = !_showGrid),
-                      hasSelection: selected != null,
-                      onDuplicateSelection: _duplicateSelected,
-                      onDeleteSelection: _deleteSelected,
                       onZoomIn: () => _zoomAt(_center, 1.25),
                       onZoomFit: _zoomToFit,
                       canFit: note.strokes.isNotEmpty,
                       onZoomOut: () => _zoomAt(_center, 0.8),
                       onResetView: _resetView,
                       canClear: note.strokes.isNotEmpty,
-                      onClear: _clear,
+                      onClear: () => _withCommit(_clear),
                       dark: dark,
                     ),
                   ),
                 ),
               ],
+              ),
             );
           },
         ),
       ),
     );
+  }
+
+  @override
+  void dispose() {
+    _labelField?.removeListener(_onLabelEdited);
+    _labelField?.dispose();
+    _labelFocus?.dispose();
+    super.dispose();
   }
 
   SystemMouseCursor _cursorFor(CanvasTool t) => switch (t) {

@@ -32,24 +32,41 @@ plus a **Draw mode** on every note for sketching diagrams.
 - Keyboard: `Ctrl+N` new note, `Ctrl+F` search, `?` button shows all
   shortcuts
 
-### Draw mode (per-note diagram canvas)
-- **Select & move**: click a stroke to select it, drag to move,
+### Draw mode (per-note diagram canvas, Excalidraw-style)
+- **Sketchy rendering**: shapes draw as wobbly hand-drawn outlines (stable
+  per stroke), with hachure / solid / cross-hatch fills and solid / dashed
+  / dotted outlines
+- **Shapes**: line, rectangle, ellipse, diamond, arrow — hold `Shift` to
+  snap lines/arrows to 45° and force squares/circles/regular diamonds
+- **Style applies to selection**: pick ink, width, fill or stroke style
+  while a shape is selected to restyle it (with undo)
+- **Select & move**: click a stroke to select it, drag to move; drag on
+  empty canvas to rubber-band **multi-select** (or `Shift`+click to add
+  and remove), then move, restyle, duplicate or delete them together;
   arrow keys nudge (`Shift` = 10 px), `Delete` removes, `Ctrl+D`
   duplicates, `Esc` deselects
+- **Resize & rotate**: a single selection shows Excalidraw-style handles —
+  drag corners/edges to resize (`Shift` keeps the aspect ratio; stroke
+  width and text size scale along) and the round handle above the box to
+  rotate (`Shift` snaps to 15°)
 - **Right-click a stroke** for a context menu: edit label, duplicate,
   bring to front / send to back, delete
-- **Text labels**: click with the text tool to place a label (font-size
-  picker in the dialog); double-click any label to edit it
+- **Layout like Excalidraw**: a vertical tool palette floating on the
+  canvas' left edge (active tool highlighted) and a properties/actions bar
+  along the bottom (undo/redo, selection actions, style pickers, zoom)
+- **Text labels typed in place**: double-click empty canvas (or use the
+  text tool) and type directly on the canvas — `Enter` for new lines,
+  `Esc` or a click elsewhere commits (empty text discards). Labels use a
+  handwritten font; pick their size from the bottom bar
 - Pen, highlighter, stroke eraser (also erases with a stylus-eraser)
-- Shapes: line, rectangle, ellipse, arrow — outline/filled toggle; hold
-  `Shift` to snap lines/arrows to 45° and force squares/circles
 - 10 ink colors, 5 stroke widths
 - Undo/redo (`Ctrl+Z` / `Ctrl+Y` or `Ctrl+Shift+Z`, up to 200 steps,
   covers moves, z-order changes and erases), clear canvas
 - Duplicate / delete buttons for the current selection, grid on/off,
   zoom-to-fit
 - Pan (hand tool, middle-mouse drag or trackpad), zoom (mouse wheel,
-  buttons or trackpad pinch) with a live zoom-percentage badge, reset view
+  buttons or trackpad pinch) with a clickable zoom percentage in the
+  bottom bar, reset view
 
 ## Run
 

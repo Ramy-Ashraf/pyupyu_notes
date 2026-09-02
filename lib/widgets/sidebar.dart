@@ -186,6 +186,8 @@ class _SidebarState extends State<Sidebar> {
       ('Ctrl+Z / Y', 'Undo / redo (text & canvas)'),
       ('Ctrl+D', 'Duplicate selected stroke'),
       ('Delete', 'Delete selected stroke'),
+      ('Drag empty canvas', 'Marquee-select shapes'),
+      ('Handles', 'Resize / rotate selection'),
       ('Arrow keys', 'Nudge selection (Shift = 10 px)'),
       ('Shift+drag', 'Snap shapes to 45° / square'),
       ('Esc', 'Deselect stroke'),
