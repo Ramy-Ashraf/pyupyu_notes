@@ -27,7 +27,8 @@ class Note {
   /// Rich-text formatting ranges over [body].
   List<FormatSpan> formats;
 
-  static final _listPrefix = RegExp(r'^(☐|☒|\[[ xX]\]|[-•*])\s*');
+  static final _listPrefix =
+      RegExp(r'^(☐|☒|\[[ xX]\]|[-•*]|\d+[.)])\s*');
 
   String get title {
     for (final line in body.split('\n')) {

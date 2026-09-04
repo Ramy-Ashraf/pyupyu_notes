@@ -11,6 +11,7 @@ import 'package:notes_app/models/format_span.dart';
 import 'package:notes_app/models/note.dart';
 import 'package:notes_app/models/stroke_item.dart';
 import 'package:notes_app/services/notes_store.dart';
+import 'package:notes_app/utils/markdown_table.dart';
 import 'package:notes_app/widgets/drawing/stroke_render.dart';
 
 Note _note({
@@ -309,6 +310,67 @@ void main() {
       expect(c.text, 'first\nsecond\nplain');
     });
 
+    test('numbered lists continue with the next number', () {
+      final c = FormatTextController(text: '1. one');
+      c.selection = const TextSelection.collapsed(offset: 6);
+      c.value = const TextEditingValue(
+        text: '1. one\n',
+        selection: TextSelection.collapsed(offset: 7),
+      );
+      expect(c.text, '1. one\n2. ');
+      expect(c.selection.baseOffset, 10);
+    });
+
+    test('Enter on an empty numbered item exits the list', () {
+      final c = FormatTextController(text: '1. one\n2. ');
+      c.selection = const TextSelection.collapsed(offset: 10);
+      c.value = const TextEditingValue(
+        text: '1. one\n2. \n',
+        selection: TextSelection.collapsed(offset: 11),
+      );
+      expect(c.text, '1. one');
+      expect(c.selection.baseOffset, 6);
+    });
+
+    test('numbered runs renumber after edits', () {
+      final c = FormatTextController(text: '1. a\n2. b');
+      c.selection = const TextSelection.collapsed(offset: 9);
+      c.value = const TextEditingValue(
+        text: '1. a\n5. bX',
+        selection: TextSelection.collapsed(offset: 10),
+      );
+      expect(c.text, '1. a\n2. bX');
+      expect(c.selection.baseOffset, 10);
+    });
+
+    test('a lone numbered line is left alone', () {
+      final c = FormatTextController(text: '3. just a note');
+      c.selection = const TextSelection.collapsed(offset: 14);
+      c.value = const TextEditingValue(
+        text: '3. just a note!',
+        selection: TextSelection.collapsed(offset: 15),
+      );
+      expect(c.text, '3. just a note!');
+    });
+
+    test('toggleNumberedList converts and strips numbers', () {
+      final c = FormatTextController(text: 'one\n\ntwo');
+      c.selection = TextSelection(baseOffset: 0, extentOffset: c.text.length);
+      c.toggleNumberedList();
+      expect(c.text, '1. one\n\n2. two');
+      c.toggleNumberedList();
+      expect(c.text, 'one\n\ntwo');
+    });
+
+    test('toggleNumberedList converts bullets and checkboxes', () {
+      final c = FormatTextController(text: '- a\n☐ b');
+      c.selection = TextSelection(baseOffset: 0, extentOffset: c.text.length);
+      c.toggleNumberedList();
+      expect(c.text, '1. a\n2. b');
+    });
+
+
+
     testWidgets('buildTextSpan merges format flags with the composing range',
         (tester) async {
       final c = FormatTextController(
@@ -364,6 +426,159 @@ void main() {
     expect(bounds.width, greaterThan(0));
     // Three lines at 18px with a 1.25 height factor are ~68px tall.
     expect(bounds.height, greaterThan(60));
+  });
+
+  group('Markdown tables (Notepad-style)', () {
+    test('splitTableCells handles outer pipes and escapes', () {
+      expect(splitTableCells('| Name | Age |'), ['Name', 'Age']);
+      expect(splitTableCells('a | b'), ['a', 'b']);
+      expect(splitTableCells('a \\| b | c'), ['a | b', 'c']);
+    });
+
+    test('plain text and lone pipe lines are not tables', () {
+      expect(findMarkdownTable('hello', 2), isNull);
+      expect(findMarkdownTable('a | b', 2), isNull);
+      expect(isInMarkdownTable('just text', 4), isFalse);
+    });
+
+    test('insertTable creates a header, delimiter and body rows', () {
+      final c = FormatTextController(text: '');
+      c.selection = const TextSelection.collapsed(offset: 0);
+      c.insertTable(2, 2);
+      expect(c.text, '|  |  |\n| --- | --- |\n|  |  |\n|  |  |');
+      expect(c.selection.baseOffset, 2);
+      expect(c.isInTable, isTrue);
+    });
+
+    test('Tab moves to the next cell', () {
+      final c = FormatTextController(text: '');
+      c.selection = const TextSelection.collapsed(offset: 0);
+      c.insertTable(2, 1);
+      expect(c.handleTableTab(backwards: false), isTrue);
+      expect(c.text, '|  |  |\n| --- | --- |\n|  |  |');
+      expect(c.selection.baseOffset, 6);
+    });
+
+    test('Tab past the last cell appends a body row', () {
+      final c = FormatTextController(text: '');
+      c.selection = const TextSelection.collapsed(offset: 0);
+      c.insertTable(1, 1);
+      c.selection = TextSelection.collapsed(offset: c.text.length);
+      expect(c.handleTableTab(backwards: false), isTrue);
+      expect(c.text, '|  |\n| --- |\n|  |\n|  |');
+      expect(c.selection.baseOffset, 20);
+    });
+
+    test('Enter on an empty last row exits the table', () {
+      final c = FormatTextController(text: 'A\n|  |\n| --- |\n|  |\nB');
+      c.selection = const TextSelection.collapsed(offset: 16);
+      expect(c.handleTableEnter(), isTrue);
+      expect(c.text, 'A\n|  |\n| --- |\nB');
+      expect(c.selection.baseOffset, 15);
+    });
+
+    test('deleteTableColumn narrows the table', () {
+      final c = FormatTextController(
+        text: '| a | b |\n| --- | --- |\n| c | d |',
+      );
+      c.selection = const TextSelection.collapsed(offset: 2);
+      c.deleteTableColumn();
+      expect(c.text, '| b |\n| --- |\n| d |');
+      expect(c.selection.baseOffset, 2);
+    });
+
+    test('formatTable aligns pipes', () {
+      final c = FormatTextController(
+        text: '| a | bb |\n| --- | --- |\n| ccc | d |',
+      );
+      c.selection = const TextSelection.collapsed(offset: 2);
+      c.formatTable();
+      expect(c.text, '| a   | bb  |\n| --- | --- |\n| ccc | d   |');
+    });
+
+    test('formatTable keeps escaped pipes intact', () {
+      final c = FormatTextController(
+        text: '| a\\|b | c |\n| --- | --- |\n| d | e |',
+      );
+      c.selection = const TextSelection.collapsed(offset: 2);
+      c.formatTable();
+      expect(c.text, '| a\\|b | c   |\n| ---- | --- |\n| d    | e   |');
+    });
+
+    test('deleteTable removes the block without stray blank lines', () {
+      final c = FormatTextController(
+        text: 'A\n|  |\n| --- |\n|  |\nB',
+      );
+      c.selection = const TextSelection.collapsed(offset: 5);
+      c.deleteTable();
+      expect(c.text, 'A\nB');
+    });
+
+    test('insertTableRowAbove keeps the caret in its cell', () {
+      final c = FormatTextController(
+        text: '| a | b |\n| --- | --- |\n| c | d |',
+      );
+      c.selection = const TextSelection.collapsed(offset: 2);
+      c.insertTableRowAbove();
+      expect(c.text, '|  |  |\n| --- | --- |\n| a | b |\n| c | d |');
+      expect(c.selection.baseOffset, 24);
+    });
+
+    test('insertTableRowBelow appends under the current row', () {
+      final c = FormatTextController(
+        text: '| a | b |\n| --- | --- |\n| c | d |',
+      );
+      c.selection = const TextSelection.collapsed(offset: 26);
+      c.insertTableRowBelow();
+      expect(c.text, '| a | b |\n| --- | --- |\n| c | d |\n|  |  |');
+      expect(c.selection.baseOffset, 26);
+    });
+
+    test('insertTableColumnRight widens every row', () {
+      final c = FormatTextController(
+        text: '| a | b |\n| --- | --- |\n| c | d |',
+      );
+      c.selection = const TextSelection.collapsed(offset: 2);
+      c.insertTableColumnRight();
+      expect(c.text, '| a |  | b |\n| --- | --- | --- |\n| c |  | d |');
+      expect(c.selection.baseOffset, 2);
+    });
+
+    test('deleteTableRow removes the current row', () {
+      final c = FormatTextController(text: '| a |\n| --- |\n| b |');
+      c.selection = const TextSelection.collapsed(offset: 16);
+      c.deleteTableRow();
+      expect(c.text, '| a |\n| --- |');
+      expect(c.selection.baseOffset, 2);
+    });
+
+    test('Tab selects a non-empty cell for quick replacement', () {
+      final c = FormatTextController(
+        text: '| ab | cd |\n| --- | --- |\n| ef | gh |',
+      );
+      c.selection = const TextSelection.collapsed(offset: 3);
+      expect(c.handleTableTab(backwards: false), isTrue);
+      expect(c.selection.baseOffset, 7);
+      expect(c.selection.extentOffset, 9);
+    });
+
+    test('Enter moves down one row in the same column', () {
+      final c = FormatTextController(
+        text: '| a | b |\n| --- | --- |\n| c | d |',
+      );
+      c.selection = const TextSelection.collapsed(offset: 2);
+      expect(c.handleTableEnter(), isTrue);
+      expect(c.text, '| a | b |\n| --- | --- |\n| c | d |');
+      expect(c.selection.baseOffset, 26);
+    });
+
+    test('Enter on the last row appends a body row', () {
+      final c = FormatTextController(text: '| a |\n| --- |\n| b |');
+      c.selection = const TextSelection.collapsed(offset: 16);
+      expect(c.handleTableEnter(), isTrue);
+      expect(c.text, '| a |\n| --- |\n| b |\n|  |');
+      expect(c.selection.baseOffset, 22);
+    });
   });
 
   group('NotesController.duplicateNote', () {

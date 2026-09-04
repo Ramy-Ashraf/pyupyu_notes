@@ -183,6 +183,8 @@ class _SidebarState extends State<Sidebar> {
       ('Ctrl+F', 'Search notes'),
       ('Ctrl+B / I / U', 'Bold / italic / underline'),
       ('Enter', 'Continue (or exit) a list'),
+      ('Tab / Shift+Tab', 'Next / previous table cell'),
+      ('Enter (in table)', 'Row below (empty row exits)'),
       ('Ctrl+Z / Y', 'Undo / redo (text & canvas)'),
       ('Ctrl+D', 'Duplicate selected stroke'),
       ('Delete', 'Delete selected stroke'),

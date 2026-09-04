@@ -10,6 +10,7 @@ import '../models/note.dart';
 import '../theme/note_palette.dart';
 import '../utils/export.dart';
 import '../utils/format.dart';
+import '../utils/markdown_table.dart';
 import 'drawing/diagram_canvas.dart';
 
 enum EditorView { text, canvas }
@@ -244,7 +245,8 @@ class _TextBody extends StatefulWidget {
 }
 
 class _TextBodyState extends State<_TextBody> {
-  final _focusNode = FocusNode();
+  late final FocusNode _focusNode =
+      FocusNode(onKeyEvent: _handleTableKeys);
 
   late final FormatTextController _field = FormatTextController(
     text: widget.note.body,
@@ -299,6 +301,29 @@ class _TextBodyState extends State<_TextBody> {
     _focusNode.requestFocus();
   }
 
+  /// Intercepts Tab / Shift+Tab (cell navigation) and Enter (row below)
+  /// while the caret is inside a Markdown table — exactly like Notepad.
+  /// Anything else (or any key outside a table) falls through to the field.
+  KeyEventResult _handleTableKeys(FocusNode node, KeyEvent event) {
+    if (event is! KeyDownEvent) return KeyEventResult.ignored;
+    final key = event.logicalKey;
+    final isTab = key == LogicalKeyboardKey.tab;
+    final isEnter = key == LogicalKeyboardKey.enter ||
+        key == LogicalKeyboardKey.numpadEnter;
+    if (!isTab && !isEnter) return KeyEventResult.ignored;
+    if (!_field.isInTable) return KeyEventResult.ignored;
+    if (isTab) {
+      final backwards = HardwareKeyboard.instance.isShiftPressed;
+      if (_field.handleTableTab(backwards: backwards)) {
+        return KeyEventResult.handled;
+      }
+      return KeyEventResult.ignored;
+    }
+    return _field.handleTableEnter()
+        ? KeyEventResult.handled
+        : KeyEventResult.ignored;
+  }
+
   @override
   Widget build(BuildContext context) {
     final words = _field.text
@@ -332,6 +357,7 @@ class _TextBodyState extends State<_TextBody> {
                 expands: true,
                 keyboardType: TextInputType.multiline,
                 textAlignVertical: TextAlignVertical.top,
+                contextMenuBuilder: _tableContextMenu,
                 style: TextStyle(
                   color: widget.textColor,
                   fontSize: 15,
@@ -468,6 +494,9 @@ class _TextBodyState extends State<_TextBody> {
               _field.toggleChecklist),
           _barButton(Icons.format_list_bulleted, 'Bulleted list',
               _field.toggleBulletList),
+          _barButton(Icons.format_list_numbered, 'Numbered list',
+              _field.toggleNumberedList),
+          _tableButton(),
           _barButton(Icons.today_outlined, 'Insert date & time',
               _insertDateTime),
           _barButton(Icons.format_clear, 'Clear formatting',
@@ -482,6 +511,410 @@ class _TextBodyState extends State<_TextBody> {
           ),
         ],
       ),
+    );
+  }
+
+  // ---- tables (Notepad-style) -------------------------------------------
+
+  /// The Table button mirrors Windows Notepad: outside a table it inserts
+  /// one (grid picker + custom dialog); inside a table it opens the Table
+  /// editing menu (rows, columns, select, delete, format, preview).
+  Widget _tableButton() {
+    if (!_field.isInTable) {
+      return _barButton(
+        Icons.table_chart_outlined,
+        'Insert table',
+        _showInsertTableDialog,
+      );
+    }
+    return PopupMenuButton<_TableAction>(
+      tooltip: 'Table',
+      icon: Icon(
+        Icons.table_chart_outlined,
+        size: 20,
+        color: widget.textColor.withValues(alpha: 0.55),
+      ),
+      onSelected: (a) {
+        if (a == _TableAction.preview) {
+          _showTablePreview();
+        } else {
+          _act(() => _applyTableAction(a));
+        }
+      },
+      itemBuilder: (_) => const [
+        PopupMenuItem(
+          value: _TableAction.rowAbove,
+          height: 40,
+          child: Text('Insert row above'),
+        ),
+        PopupMenuItem(
+          value: _TableAction.rowBelow,
+          height: 40,
+          child: Text('Insert row below'),
+        ),
+        PopupMenuItem(
+          value: _TableAction.columnLeft,
+          height: 40,
+          child: Text('Insert column left'),
+        ),
+        PopupMenuItem(
+          value: _TableAction.columnRight,
+          height: 40,
+          child: Text('Insert column right'),
+        ),
+        PopupMenuDivider(height: 8),
+        PopupMenuItem(
+          value: _TableAction.selectRow,
+          height: 40,
+          child: Text('Select row'),
+        ),
+        PopupMenuItem(
+          value: _TableAction.selectTable,
+          height: 40,
+          child: Text('Select table'),
+        ),
+        PopupMenuDivider(height: 8),
+        PopupMenuItem(
+          value: _TableAction.deleteRow,
+          height: 40,
+          child: Text('Delete row'),
+        ),
+        PopupMenuItem(
+          value: _TableAction.deleteColumn,
+          height: 40,
+          child: Text('Delete column'),
+        ),
+        PopupMenuItem(
+          value: _TableAction.deleteTable,
+          height: 40,
+          child: Text('Delete table'),
+        ),
+        PopupMenuDivider(height: 8),
+        PopupMenuItem(
+          value: _TableAction.format,
+          height: 40,
+          child: Text('Fit columns to content'),
+        ),
+        PopupMenuItem(
+          value: _TableAction.preview,
+          height: 40,
+          child: Text('Preview table'),
+        ),
+      ],
+    );
+  }
+
+  void _applyTableAction(_TableAction action) {
+    switch (action) {
+      case _TableAction.rowAbove:
+        _field.insertTableRowAbove();
+      case _TableAction.rowBelow:
+        _field.insertTableRowBelow();
+      case _TableAction.columnLeft:
+        _field.insertTableColumnLeft();
+      case _TableAction.columnRight:
+        _field.insertTableColumnRight();
+      case _TableAction.selectRow:
+        _field.selectTableRow();
+      case _TableAction.selectTable:
+        _field.selectTable();
+      case _TableAction.deleteRow:
+        _field.deleteTableRow();
+      case _TableAction.deleteColumn:
+        _field.deleteTableColumn();
+      case _TableAction.deleteTable:
+        _field.deleteTable();
+      case _TableAction.format:
+        _field.formatTable();
+      case _TableAction.preview:
+        // Handled by the caller (needs a BuildContext for the dialog).
+        break;
+    }
+  }
+
+  /// Right-click menu additions mirroring Notepad: `Insert table` outside a
+  /// table, row/column/delete actions inside one.
+  Widget _tableContextMenu(
+    BuildContext context,
+    EditableTextState editableTextState,
+  ) {
+    final items = [...editableTextState.contextMenuButtonItems];
+    void add(String label, VoidCallback fn) {
+      items.add(
+        ContextMenuButtonItem(
+          label: label,
+          onPressed: () {
+            editableTextState.hideToolbar();
+            fn();
+          },
+        ),
+      );
+    }
+
+    if (_field.isInTable) {
+      add('Insert row above', () => _act(_field.insertTableRowAbove));
+      add('Insert row below', () => _act(_field.insertTableRowBelow));
+      add('Insert column left', () => _act(_field.insertTableColumnLeft));
+      add('Insert column right', () => _act(_field.insertTableColumnRight));
+      add('Delete row', () => _act(_field.deleteTableRow));
+      add('Delete column', () => _act(_field.deleteTableColumn));
+      add('Delete table', () => _act(_field.deleteTable));
+    } else {
+      add('Insert table…', _showInsertTableDialog);
+    }
+    return AdaptiveTextSelectionToolbar.buttonItems(
+      anchors: editableTextState.contextMenuAnchors,
+      buttonItems: items,
+    );
+  }
+
+  Future<void> _showInsertTableDialog() async {
+    final size = await showDialog<_TableSize>(
+      context: context,
+      builder: (_) => const _InsertTableDialog(),
+    );
+    if (size == null || !mounted) return;
+    _act(() => _field.insertTable(size.columns, size.rows));
+  }
+
+  void _showTablePreview() {
+    final table = _field.currentTable();
+    if (table == null) return;
+    showDialog<void>(
+      context: context,
+      builder: (_) => _TablePreviewDialog(
+        table: table,
+        textColor: widget.textColor,
+      ),
+    );
+  }
+}
+
+/// Table-menu actions (mirrors the Notepad Table submenu).
+enum _TableAction {
+  rowAbove,
+  rowBelow,
+  columnLeft,
+  columnRight,
+  selectRow,
+  selectTable,
+  deleteRow,
+  deleteColumn,
+  deleteTable,
+  format,
+  preview,
+}
+
+/// Grid-picker result: [columns] text columns, [rows] body rows (the header
+/// row is always added automatically, like Notepad).
+class _TableSize {
+  const _TableSize({required this.columns, required this.rows});
+
+  final int columns;
+  final int rows;
+}
+
+/// Notepad-style insert dialog: hover a grid for a quick size, or type exact
+/// columns/rows and press Insert.
+class _InsertTableDialog extends StatefulWidget {
+  const _InsertTableDialog();
+
+  @override
+  State<_InsertTableDialog> createState() => _InsertTableDialogState();
+}
+
+class _InsertTableDialogState extends State<_InsertTableDialog> {
+  static const _maxCols = 10;
+  static const _maxRows = 8;
+
+  int _hoverCols = 3;
+  int _hoverRows = 3;
+  late final _colsController = TextEditingController(text: '3');
+  late final _rowsController = TextEditingController(text: '3');
+
+  @override
+  void dispose() {
+    _colsController.dispose();
+    _rowsController.dispose();
+    super.dispose();
+  }
+
+  void _submit(int columns, int rows) {
+    final c = columns < 1
+        ? 1
+        : (columns > kMaxTableColumns ? kMaxTableColumns : columns);
+    final r = rows < 1 ? 1 : (rows > kMaxTableBodyRows ? kMaxTableBodyRows : rows);
+    Navigator.of(context).pop(_TableSize(columns: c, rows: r));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const cell = 24.0;
+    const gap = 3.0;
+    return AlertDialog(
+      title: const Text('Insert table'),
+      contentPadding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
+      content: SizedBox(
+        width: _maxCols * (cell + gap),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            GridView.builder(
+              shrinkWrap: true,
+              physics: const NeverScrollableScrollPhysics(),
+              gridDelegate:
+                  const SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: _maxCols,
+                mainAxisSpacing: gap,
+                crossAxisSpacing: gap,
+              ),
+              itemCount: _maxCols * _maxRows,
+              itemBuilder: (_, i) {
+                final c = i % _maxCols + 1;
+                final r = i ~/ _maxCols + 1;
+                final on = c <= _hoverCols && r <= _hoverRows;
+                final scheme = Theme.of(context).colorScheme;
+                return MouseRegion(
+                  onEnter: (_) => setState(() {
+                    _hoverCols = c;
+                    _hoverRows = r;
+                    _colsController.text = '$c';
+                    _rowsController.text = '$r';
+                  }),
+                  child: GestureDetector(
+                    onTap: () => _submit(c, r),
+                    child: Container(
+                      width: cell,
+                      height: cell,
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(4),
+                        color: on
+                            ? scheme.primary.withValues(alpha: 0.75)
+                            : scheme.surfaceContainerHighest
+                                .withValues(alpha: 0.6),
+                        border: Border.all(
+                          color: scheme.outline.withValues(alpha: 0.4),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '$_hoverCols × $_hoverRows table',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+            const Divider(height: 24),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _colsController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Columns',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextField(
+                    controller: _rowsController,
+                    keyboardType: TextInputType.number,
+                    decoration: const InputDecoration(
+                      labelText: 'Rows',
+                      border: OutlineInputBorder(),
+                      isDense: true,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => _submit(
+            int.tryParse(_colsController.text.trim()) ?? _hoverCols,
+            int.tryParse(_rowsController.text.trim()) ?? _hoverRows,
+          ),
+          child: const Text('Insert'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Read-only rendering of the current table — the formatted counterpart to
+/// the Markdown source, like Notepad's formatted table view.
+class _TablePreviewDialog extends StatelessWidget {
+  const _TablePreviewDialog({required this.table, required this.textColor});
+
+  final MarkdownTable table;
+  final Color textColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final border = TableBorder.all(
+      color: textColor.withValues(alpha: 0.3),
+      width: 1,
+    );
+    Widget cell(String value, {required bool header}) => Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+          child: Text(
+            value.isEmpty ? ' ' : value,
+            style: TextStyle(
+              color: textColor,
+              fontWeight: header ? FontWeight.w700 : null,
+            ),
+          ),
+        );
+    return AlertDialog(
+      title: const Text('Table preview'),
+      contentPadding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
+      content: SizedBox(
+        width: 440,
+        height: 360,
+        child: SingleChildScrollView(
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Table(
+              border: border,
+              defaultColumnWidth: const IntrinsicColumnWidth(),
+              children: [
+                for (var r = 0; r < table.rows.length; r++)
+                  TableRow(
+                    decoration: r == 0
+                        ? BoxDecoration(
+                            color: textColor.withValues(alpha: 0.08),
+                          )
+                        : null,
+                    children: [
+                      for (final value in table.rows[r])
+                        cell(value, header: r == 0),
+                    ],
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Close'),
+        ),
+      ],
     );
   }
 }

@@ -16,8 +16,21 @@ plus a **Draw mode** on every note for sketching diagrams.
 - **Checklists**: toolbar button cycles selected lines plain → ☐ → ☒ → plain;
   bullets convert to checkboxes. Pressing Enter continues the list (or exits
   it on an empty item); Enter after a checked item starts an unchecked one
-- **Bulleted lists**: one-click toggle between plain text and `- ` bullets
+- **Bulleted & numbered lists**: one-click toggle between plain text and
+  `- ` bullets or `1. ` numbers (other list markers convert along the
+  way). Enter continues any list — numbered items increment — and an
+  empty item exits it. Numbered runs renumber themselves automatically
+  after edits (delete an entry and the rest shift up)
 - **Headings**: `H1` / `H2` chips in the formatting bar
+- **Tables (like Windows Notepad)**: toolbar button inserts a
+  Markdown pipe table — pick a size from the grid or type exact
+  columns/rows. Inside a table the button becomes the Table menu: insert
+  row above/below, insert column left/right, select row/table, delete
+  row/column/table, fit columns to content, and preview the rendered
+  grid. Right-click offers the same actions; `Tab` / `Shift+Tab` moves
+  between cells (`Tab` past the last cell appends a row) and `Enter`
+  moves down a row (`Enter` on an empty last row exits the table).
+  Tables are plain Markdown, so `.txt` exports stay portable
 - **Insert date & time** at the caret from the formatting bar
 - Word/character count, search (matches note text *and* diagram labels),
   light/dark/system theme
@@ -111,6 +124,7 @@ lib/
 │   └── note_palette.dart         # Sticky-Notes-style color palette
 ├── utils/
 │   ├── format.dart               # date labels
+│   ├── markdown_table.dart       # Notepad-style pipe-table model + edits
 │   └── export.dart               # .txt / .png export to Downloads
 ├── pages/
 │   └── home_page.dart            # two-pane layout + global shortcuts

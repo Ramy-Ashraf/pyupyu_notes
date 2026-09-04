@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../models/format_span.dart';
+import '../utils/markdown_table.dart' as mdtable;
 
 /// A TextEditingController that carries bold/italic/underline/strikethrough
 /// formatting ranges, keeps them aligned across edits, renders them via
@@ -35,11 +36,12 @@ class FormatTextController extends TextEditingController {
     _prev = newV;
     if (oldV.text == newV.text) return;
     _formats = adjustSpansForChange(_formats, oldV.text, newV.text);
-    if (!_maybeContinueList(oldV, newV)) {
+    if (!_maybeSmartNewline(oldV, newV)) {
+      _renumberLists();
       onEdited?.call();
     }
-    // If the list continuation rewrote the value, the nested listener pass
-    // adjusted spans and notified [onEdited] itself.
+    // If the smart newline rewrote the value, the nested listener pass
+    // adjusts spans, renumbers and notifies [onEdited] itself.
   }
 
   /// Replaces the whole content (used when the note changes externally).
@@ -146,34 +148,25 @@ class FormatTextController extends TextEditingController {
   }
 
   /// Detects a bare newline typed at the end of a list line and continues
-  /// the list (or exits it on an empty item). Checked items continue as
-  /// unchecked. Rewrites [value]; returns true when it did.
-  bool _maybeContinueList(TextEditingValue oldV, TextEditingValue newV) {
+  /// it: list prefixes repeat (checked items continue unchecked), numbered
+  /// items increment. Rewrites [value]; returns true when it did.
+  bool _maybeSmartNewline(TextEditingValue oldV, TextEditingValue newV) {
     final oldText = oldV.text;
     final newText = newV.text;
-    final minLen = math.min(oldText.length, newText.length);
-
-    var p = 0;
-    while (p < minLen && oldText[p] == newText[p]) {
-      p++;
-    }
-    var sfx = 0;
-    while (sfx < minLen - p &&
-        oldText.codeUnitAt(oldText.length - 1 - sfx) ==
-            newText.codeUnitAt(newText.length - 1 - sfx)) {
-      sfx++;
-    }
-    // Exactly one '\n' inserted, nothing replaced.
-    if (oldText.length - p - sfx != 0 || newText.length - p - sfx != 1) {
-      return false;
-    }
-    final pos = p;
-    if (newText[pos] != '\n') return false;
+    // Exactly one '\n' inserted, nothing replaced — derive pos from caret.
+    if (newText.length != oldText.length + 1) return false;
     final sel = newV.selection;
-    if (!sel.isCollapsed || sel.baseOffset != pos + 1) return false;
+    if (!sel.isValid || !sel.isCollapsed) return false;
+    final pos = sel.baseOffset - 1;
+    if (pos < 0 || pos >= newText.length) return false;
+    if (newText.codeUnitAt(pos) != 0x0A) return false;
+    if (pos > oldText.length) return false;
+    if (newText.substring(0, pos) != oldText.substring(0, pos)) return false;
+    if (newText.substring(pos + 1) != oldText.substring(pos)) return false;
 
     final lineStart = pos == 0 ? 0 : newText.lastIndexOf('\n', pos - 1) + 1;
     final lineToCaret = newText.substring(lineStart, pos);
+
     String? prefix;
     for (final pfx in _listPrefixes) {
       if (lineToCaret.startsWith(pfx)) {
@@ -181,7 +174,29 @@ class FormatTextController extends TextEditingController {
         break;
       }
     }
-    if (prefix == null) return false;
+    if (prefix == null) {
+      // Numbered list: "3. item" continues as "4. ", an empty "3. " exits.
+      final m = RegExp(r'^(\d+)([.)]) (.*)$').firstMatch(lineToCaret);
+      if (m == null) return false;
+      final n = int.parse(m.group(1)!);
+      final delim = m.group(2)!;
+      if (m.group(3)!.isEmpty) {
+        final from = lineStart == 0 ? 0 : lineStart - 1;
+        value = newV.copyWith(
+          text: newText.replaceRange(from, pos + 1, ''),
+          selection: TextSelection.collapsed(offset: from),
+          composing: TextRange.empty,
+        );
+        return true;
+      }
+      final next = '${n + 1}$delim ';
+      value = newV.copyWith(
+        text: newText.replaceRange(pos + 1, pos + 1, next),
+        selection: TextSelection.collapsed(offset: pos + 1 + next.length),
+        composing: TextRange.empty,
+      );
+      return true;
+    }
 
     if (lineToCaret == prefix) {
       // Enter on an empty item: remove the whole item instead.
@@ -200,6 +215,70 @@ class FormatTextController extends TextEditingController {
       );
     }
     return true;
+  }
+
+  /// Renumbers consecutive numbered-list runs (of 2+ lines) so entries
+  /// count 1, 2, 3… Runs on every text change; a no-op when the numbers
+  /// are already correct, and skipped during IME composition. Lone
+  /// numbered lines (a single "3. …") are left untouched.
+  void _renumberLists() {
+    final composing = value.composing;
+    if (composing.isValid && !composing.isCollapsed) return;
+    final t = text;
+    if (t.isEmpty) return;
+    final re = RegExp(r'^(\d+)([.)]) ');
+    final oldLines = t.split('\n');
+    final newLines = List<String>.of(oldLines);
+    var changed = false;
+    var runStart = -1;
+    var delim = '.';
+    for (var i = 0; i <= oldLines.length; i++) {
+      final m = i < oldLines.length ? re.firstMatch(oldLines[i]) : null;
+      if (m != null && runStart == -1) {
+        runStart = i;
+        delim = m.group(2)!;
+      }
+      if (m == null && runStart != -1) {
+        if (i - runStart >= 2) {
+          for (var k = runStart; k < i; k++) {
+            final expected = '${k - runStart + 1}$delim ';
+            if (!newLines[k].startsWith(expected)) {
+              newLines[k] = newLines[k].replaceFirst(re, expected);
+              changed = true;
+            }
+          }
+        }
+        runStart = -1;
+      }
+    }
+    if (!changed) return;
+    final newText = newLines.join('\n');
+
+    int mapOffset(int off) {
+      if (off < 0) off = t.length;
+      var line = 0;
+      var lineStart = 0;
+      while (line < oldLines.length &&
+          lineStart + oldLines[line].length + 1 <= off) {
+        lineStart += oldLines[line].length + 1;
+        line++;
+      }
+      var delta = 0;
+      for (var i = 0; i < line && i < newLines.length; i++) {
+        delta += newLines[i].length - oldLines[i].length;
+      }
+      return (off + delta).clamp(0, newText.length);
+    }
+
+    final sel = value.selection;
+    value = value.copyWith(
+      text: newText,
+      selection: TextSelection(
+        baseOffset: mapOffset(sel.baseOffset),
+        extentOffset: mapOffset(sel.extentOffset),
+      ),
+      composing: TextRange.empty,
+    );
   }
 
   /// Cycles the selected lines through: plain → unchecked ☐ → checked ☒ →
@@ -283,6 +362,161 @@ class FormatTextController extends TextEditingController {
     );
   }
 
+  /// Toggles numbered lists ("1. ", "2. ", …) on the selected lines,
+  /// converting other list markers along the way. Empty lines are left
+  /// bare and not counted.
+  void toggleNumberedList() {
+    final sel = selection;
+    if (!sel.isValid || text.isEmpty) return;
+    final t = text;
+    final s = math.min(sel.start, sel.end);
+    final e = math.max(sel.start, sel.end);
+    final blockStart = s == 0 ? 0 : t.lastIndexOf('\n', s - 1) + 1;
+    var blockEnd = t.indexOf('\n', e);
+    if (blockEnd == -1) blockEnd = t.length;
+
+    final lines = t.substring(blockStart, blockEnd).split('\n');
+    final numRe = RegExp(r'^\d+[.)] ');
+    final nonEmpty = lines.where((l) => l.trim().isNotEmpty);
+    final remove = nonEmpty.isNotEmpty && nonEmpty.every(numRe.hasMatch);
+
+    var n = 0;
+    final newLines = lines.map((line) {
+      if (remove) return line.replaceFirst(numRe, '');
+      var rest = line;
+      for (final pfx in _listPrefixes) {
+        if (rest.startsWith(pfx)) {
+          rest = rest.substring(pfx.length);
+          break;
+        }
+      }
+      final num = numRe.firstMatch(rest);
+      if (num != null) rest = rest.substring(num.end);
+      if (rest.trim().isEmpty) return rest;
+      n++;
+      return '$n. $rest';
+    }).toList();
+
+    final newBlock = newLines.join('\n');
+    value = value.copyWith(
+      text: t.replaceRange(blockStart, blockEnd, newBlock),
+      selection: TextSelection(
+        baseOffset: blockStart,
+        extentOffset: blockStart + newBlock.length,
+      ),
+      composing: TextRange.empty,
+    );
+  }
+
+  // ---- tables (Notepad-style Markdown pipe tables) ------------------------
+
+  int _caret() {
+    if (!selection.isValid) return text.length;
+    final o = selection.extentOffset;
+    return o < 0 ? 0 : (o > text.length ? text.length : o);
+  }
+
+  void _applyTableEdit(mdtable.TableEdit edit) {
+    int clamp(int v) {
+      if (v < 0) return 0;
+      return v > edit.text.length ? edit.text.length : v;
+    }
+    value = value.copyWith(
+      text: edit.text,
+      selection: TextSelection(
+        baseOffset: clamp(edit.baseOffset),
+        extentOffset: clamp(edit.extentOffset),
+      ),
+      composing: TextRange.empty,
+    );
+  }
+
+  /// The Markdown table surrounding the caret, if any.
+  mdtable.MarkdownTable? currentTable() =>
+      mdtable.findMarkdownTable(text, _caret());
+
+  /// Whether the caret sits inside a Markdown table (drives the Table
+  /// toolbar button and Tab/Enter interception).
+  bool get isInTable =>
+      selection.isValid && mdtable.isInMarkdownTable(text, _caret());
+
+  /// Inserts an empty [columns] × [bodyRows] table at the caret (header row
+  /// included automatically) and moves the caret into its first cell.
+  void insertTable(int columns, int bodyRows) {
+    _applyTableEdit(mdtable.buildInsertTable(text, _caret(), columns, bodyRows));
+  }
+
+  void insertTableRowAbove() {
+    final edit = mdtable.insertTableRow(text, _caret(), above: true);
+    if (edit != null) _applyTableEdit(edit);
+  }
+
+  void insertTableRowBelow() {
+    final edit = mdtable.insertTableRow(text, _caret(), above: false);
+    if (edit != null) _applyTableEdit(edit);
+  }
+
+  void insertTableColumnLeft() {
+    final edit = mdtable.insertTableColumn(text, _caret(), before: true);
+    if (edit != null) _applyTableEdit(edit);
+  }
+
+  void insertTableColumnRight() {
+    final edit = mdtable.insertTableColumn(text, _caret(), before: false);
+    if (edit != null) _applyTableEdit(edit);
+  }
+
+  void deleteTableRow() {
+    final edit = mdtable.deleteTableRow(text, _caret());
+    if (edit != null) _applyTableEdit(edit);
+  }
+
+  void deleteTableColumn() {
+    final edit = mdtable.deleteTableColumn(text, _caret());
+    if (edit != null) _applyTableEdit(edit);
+  }
+
+  void deleteTable() {
+    final edit = mdtable.deleteMarkdownTable(text, _caret());
+    if (edit != null) _applyTableEdit(edit);
+  }
+
+  /// Pads cells so pipes line up (text-mode "fit columns").
+  void formatTable() {
+    final edit = mdtable.formatMarkdownTable(text, _caret());
+    if (edit != null) _applyTableEdit(edit);
+  }
+
+  /// Selects the row holding the caret (Notepad's Select > Row).
+  void selectTableRow() {
+    final edit = mdtable.selectTableRow(text, _caret());
+    if (edit != null) _applyTableEdit(edit);
+  }
+
+  /// Selects the whole table (Notepad's Select > Table).
+  void selectTable() {
+    final edit = mdtable.selectMarkdownTable(text, _caret());
+    if (edit != null) _applyTableEdit(edit);
+  }
+
+  /// Tab / Shift+Tab cell navigation. Returns true when the key was consumed
+  /// (caret inside a table); Tab past the last cell appends a new body row.
+  bool handleTableTab({required bool backwards}) {
+    final edit = mdtable.moveTableCell(text, _caret(), backwards: backwards);
+    if (edit == null) return false;
+    _applyTableEdit(edit);
+    return true;
+  }
+
+  /// Enter inside a table moves down one row (appending past the end, or
+  /// exiting from an empty last row). Returns true when consumed.
+  bool handleTableEnter() {
+    final edit = mdtable.moveTableDown(text, _caret());
+    if (edit == null) return false;
+    _applyTableEdit(edit);
+    return true;
+  }
+
   // ---- rendering ----------------------------------------------------------
 
   @override
@@ -327,10 +561,8 @@ class FormatTextController extends TextEditingController {
       }
       final inComposing =
           composing != TextRange.empty && a >= composing.start && b <= composing.end;
-      children.add(TextSpan(
-        text: t.substring(a, b),
-        style: _styleFor(flags, composing: inComposing),
-      ));
+      final seg = _styleFor(flags, composing: inComposing);
+      children.add(TextSpan(text: t.substring(a, b), style: seg));
     }
     return TextSpan(style: style, children: children);
   }
