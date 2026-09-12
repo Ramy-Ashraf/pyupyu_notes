@@ -3,7 +3,6 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../models/format_span.dart';
-import '../utils/markdown_table.dart' as mdtable;
 
 /// A TextEditingController that carries bold/italic/underline/strikethrough
 /// formatting ranges, keeps them aligned across edits, renders them via
@@ -406,115 +405,6 @@ class FormatTextController extends TextEditingController {
       ),
       composing: TextRange.empty,
     );
-  }
-
-  // ---- tables (Notepad-style Markdown pipe tables) ------------------------
-
-  int _caret() {
-    if (!selection.isValid) return text.length;
-    final o = selection.extentOffset;
-    return o < 0 ? 0 : (o > text.length ? text.length : o);
-  }
-
-  void _applyTableEdit(mdtable.TableEdit edit) {
-    int clamp(int v) {
-      if (v < 0) return 0;
-      return v > edit.text.length ? edit.text.length : v;
-    }
-    value = value.copyWith(
-      text: edit.text,
-      selection: TextSelection(
-        baseOffset: clamp(edit.baseOffset),
-        extentOffset: clamp(edit.extentOffset),
-      ),
-      composing: TextRange.empty,
-    );
-  }
-
-  /// The Markdown table surrounding the caret, if any.
-  mdtable.MarkdownTable? currentTable() =>
-      mdtable.findMarkdownTable(text, _caret());
-
-  /// Whether the caret sits inside a Markdown table (drives the Table
-  /// toolbar button and Tab/Enter interception).
-  bool get isInTable =>
-      selection.isValid && mdtable.isInMarkdownTable(text, _caret());
-
-  /// Inserts an empty [columns] × [bodyRows] table at the caret (header row
-  /// included automatically) and moves the caret into its first cell.
-  void insertTable(int columns, int bodyRows) {
-    _applyTableEdit(mdtable.buildInsertTable(text, _caret(), columns, bodyRows));
-  }
-
-  void insertTableRowAbove() {
-    final edit = mdtable.insertTableRow(text, _caret(), above: true);
-    if (edit != null) _applyTableEdit(edit);
-  }
-
-  void insertTableRowBelow() {
-    final edit = mdtable.insertTableRow(text, _caret(), above: false);
-    if (edit != null) _applyTableEdit(edit);
-  }
-
-  void insertTableColumnLeft() {
-    final edit = mdtable.insertTableColumn(text, _caret(), before: true);
-    if (edit != null) _applyTableEdit(edit);
-  }
-
-  void insertTableColumnRight() {
-    final edit = mdtable.insertTableColumn(text, _caret(), before: false);
-    if (edit != null) _applyTableEdit(edit);
-  }
-
-  void deleteTableRow() {
-    final edit = mdtable.deleteTableRow(text, _caret());
-    if (edit != null) _applyTableEdit(edit);
-  }
-
-  void deleteTableColumn() {
-    final edit = mdtable.deleteTableColumn(text, _caret());
-    if (edit != null) _applyTableEdit(edit);
-  }
-
-  void deleteTable() {
-    final edit = mdtable.deleteMarkdownTable(text, _caret());
-    if (edit != null) _applyTableEdit(edit);
-  }
-
-  /// Pads cells so pipes line up (text-mode "fit columns").
-  void formatTable() {
-    final edit = mdtable.formatMarkdownTable(text, _caret());
-    if (edit != null) _applyTableEdit(edit);
-  }
-
-  /// Selects the row holding the caret (Notepad's Select > Row).
-  void selectTableRow() {
-    final edit = mdtable.selectTableRow(text, _caret());
-    if (edit != null) _applyTableEdit(edit);
-  }
-
-  /// Selects the whole table (Notepad's Select > Table).
-  void selectTable() {
-    final edit = mdtable.selectMarkdownTable(text, _caret());
-    if (edit != null) _applyTableEdit(edit);
-  }
-
-  /// Tab / Shift+Tab cell navigation. Returns true when the key was consumed
-  /// (caret inside a table); Tab past the last cell appends a new body row.
-  bool handleTableTab({required bool backwards}) {
-    final edit = mdtable.moveTableCell(text, _caret(), backwards: backwards);
-    if (edit == null) return false;
-    _applyTableEdit(edit);
-    return true;
-  }
-
-  /// Enter inside a table moves down one row (appending past the end, or
-  /// exiting from an empty last row). Returns true when consumed.
-  bool handleTableEnter() {
-    final edit = mdtable.moveTableDown(text, _caret());
-    if (edit == null) return false;
-    _applyTableEdit(edit);
-    return true;
   }
 
   // ---- rendering ----------------------------------------------------------

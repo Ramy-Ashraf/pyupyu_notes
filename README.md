@@ -22,15 +22,21 @@ plus a **Draw mode** on every note for sketching diagrams.
   empty item exits it. Numbered runs renumber themselves automatically
   after edits (delete an entry and the rest shift up)
 - **Headings**: `H1` / `H2` chips in the formatting bar
-- **Tables (like Windows Notepad)**: toolbar button inserts a
-  Markdown pipe table — pick a size from the grid or type exact
-  columns/rows. Inside a table the button becomes the Table menu: insert
-  row above/below, insert column left/right, select row/table, delete
-  row/column/table, fit columns to content, and preview the rendered
-  grid. Right-click offers the same actions; `Tab` / `Shift+Tab` moves
-  between cells (`Tab` past the last cell appends a row) and `Enter`
-  moves down a row (`Enter` on an empty last row exits the table).
-  Tables are plain Markdown, so `.txt` exports stay portable
+- **Tables (Excel-style)**: the toolbar button inserts a spreadsheet-like
+  grid right inside the note — column letters (A, B, C…), a row-number
+  gutter, crisp gridlines, a shaded bold header row, and a green
+  active-cell border with fill handle. Pick a size from the grid picker or
+  type exact columns/rows. Editing works like Excel: click a cell to
+  select it, type to replace its content, double-click / `Enter` / `F2`
+  to edit in place, `Enter` commits and moves down, `Tab` / `Shift+Tab`
+  move along the row, arrows move the selection, `Delete` clears a cell,
+  `Ctrl+C` / `Ctrl+V` copy and paste it. Right-click a cell, column letter
+  or row number for insert row above/below, insert column left/right,
+  clear contents, delete row/column/table; the toolbar's Table menu (and
+  the ＋ row / ＋ column helpers that appear under the grid) offer the
+  same operations. Tables are stored as plain Markdown pipe tables, so
+  `.txt` exports stay portable — and pasting or typing a Markdown table
+  converts it into a grid
 - **Insert date & time** at the caret from the formatting bar
 - Word/character count, search (matches note text *and* diagram labels),
   light/dark/system theme

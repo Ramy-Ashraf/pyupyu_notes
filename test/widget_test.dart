@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'dart:ui' show Canvas, PictureRecorder;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:notes_app/controllers/format_text_controller.dart';
@@ -12,7 +13,9 @@ import 'package:notes_app/models/note.dart';
 import 'package:notes_app/models/stroke_item.dart';
 import 'package:notes_app/services/notes_store.dart';
 import 'package:notes_app/utils/markdown_table.dart';
+import 'package:notes_app/widgets/body_editor.dart';
 import 'package:notes_app/widgets/drawing/stroke_render.dart';
+import 'package:notes_app/widgets/table_block.dart';
 
 Note _note({
   String id = 'n1',
@@ -428,7 +431,7 @@ void main() {
     expect(bounds.height, greaterThan(60));
   });
 
-  group('Markdown tables (Notepad-style)', () {
+  group('Markdown table model', () {
     test('splitTableCells handles outer pipes and escapes', () {
       expect(splitTableCells('| Name | Age |'), ['Name', 'Age']);
       expect(splitTableCells('a | b'), ['a', 'b']);
@@ -436,148 +439,333 @@ void main() {
     });
 
     test('plain text and lone pipe lines are not tables', () {
-      expect(findMarkdownTable('hello', 2), isNull);
-      expect(findMarkdownTable('a | b', 2), isNull);
-      expect(isInMarkdownTable('just text', 4), isFalse);
+      expect(findMarkdownTables('hello'), isEmpty);
+      expect(findMarkdownTables('a | b'), isEmpty);
+      expect(findMarkdownTables('just text\nmore'), isEmpty);
     });
 
-    test('insertTable creates a header, delimiter and body rows', () {
-      final c = FormatTextController(text: '');
-      c.selection = const TextSelection.collapsed(offset: 0);
-      c.insertTable(2, 2);
-      expect(c.text, '|  |  |\n| --- | --- |\n|  |  |\n|  |  |');
-      expect(c.selection.baseOffset, 2);
-      expect(c.isInTable, isTrue);
+    test('parse and serialize round-trip a table', () {
+      const src = '| Name | Age |\n| ---- | --- |\n| Alex | 30  |';
+      final tables = findMarkdownTables(src);
+      expect(tables, hasLength(1));
+      final data = TableData.parse(src.split('\n'));
+      expect(data.rowCount, 2);
+      expect(data.columnCount, 2);
+      expect(data.cellAt(0, 0), 'Name');
+      expect(data.cellAt(1, 1), '30');
+      expect(data.toMarkdown(), src);
     });
 
-    test('Tab moves to the next cell', () {
-      final c = FormatTextController(text: '');
-      c.selection = const TextSelection.collapsed(offset: 0);
-      c.insertTable(2, 1);
-      expect(c.handleTableTab(backwards: false), isTrue);
-      expect(c.text, '|  |  |\n| --- | --- |\n|  |  |');
-      expect(c.selection.baseOffset, 6);
+    test('cells with pipes are escaped and unescaped safely', () {
+      final data = TableData(rows: [
+        ['a | b', 'c'],
+        ['d', 'e'],
+      ]);
+      final md = data.toMarkdown();
+      expect(md, contains(r'a \| b'));
+      final parsed = TableData.parse(md.split('\n'));
+      expect(parsed.cellAt(0, 0), 'a | b');
+      expect(parsed.toMarkdown(), md);
     });
 
-    test('Tab past the last cell appends a body row', () {
-      final c = FormatTextController(text: '');
-      c.selection = const TextSelection.collapsed(offset: 0);
-      c.insertTable(1, 1);
-      c.selection = TextSelection.collapsed(offset: c.text.length);
-      expect(c.handleTableTab(backwards: false), isTrue);
-      expect(c.text, '|  |\n| --- |\n|  |\n|  |');
-      expect(c.selection.baseOffset, 20);
+    test('back-to-back tables are detected separately', () {
+      const src = '| a | b |\n| --- | --- |\n| 1 | 2 |\n'
+          '| c | d |\n| --- | --- |\n| 3 | 4 |';
+      expect(findMarkdownTables(src), hasLength(2));
     });
 
-    test('Enter on an empty last row exits the table', () {
-      final c = FormatTextController(text: 'A\n|  |\n| --- |\n|  |\nB');
-      c.selection = const TextSelection.collapsed(offset: 16);
-      expect(c.handleTableEnter(), isTrue);
-      expect(c.text, 'A\n|  |\n| --- |\nB');
-      expect(c.selection.baseOffset, 15);
+    test('rows and columns can be inserted and deleted', () {
+      final data = TableData.parse('| a | b |\n| --- | --- |\n| c | d |'.split('\n'));
+      expect(data.insertRowAt(2), 2);
+      expect(data.rowCount, 3);
+      expect(data.cellAt(2, 0), '');
+      expect(data.deleteRowAt(1), isTrue);
+      expect(data.cellAt(1, 0), '');
+      expect(data.insertColumnAt(1), 1);
+      expect(data.columnCount, 3);
+      expect(data.cellAt(0, 1), '');
+      expect(data.deleteColumnAt(0), isTrue);
+      expect(data.cellAt(0, 0), '');
+      expect(data.cellAt(0, 1), 'b');
+      // Down to a single row/column, deletion refuses: the caller removes
+      // the whole table instead.
+      expect(data.deleteRowAt(0), isTrue);
+      expect(data.deleteRowAt(0), isFalse);
+      expect(data.deleteColumnAt(0), isTrue);
+      expect(data.deleteColumnAt(0), isFalse);
     });
 
-    test('deleteTableColumn narrows the table', () {
-      final c = FormatTextController(
-        text: '| a | b |\n| --- | --- |\n| c | d |',
+    test('serialization pads cells so pipes line up', () {
+      final data = TableData(rows: [
+        ['a', 'bb'],
+        ['ccc', 'd'],
+      ]);
+      expect(
+        data.toMarkdown(),
+        '| a   | bb  |\n| --- | --- |\n| ccc | d   |',
       );
-      c.selection = const TextSelection.collapsed(offset: 2);
-      c.deleteTableColumn();
-      expect(c.text, '| b |\n| --- |\n| d |');
-      expect(c.selection.baseOffset, 2);
     });
 
-    test('formatTable aligns pipes', () {
-      final c = FormatTextController(
-        text: '| a | bb |\n| --- | --- |\n| ccc | d |',
+    test('empty tables have the requested size', () {
+      final data = TableData.empty(3, 2);
+      expect(data.rowCount, 3); // header + 2 body rows
+      expect(data.columnCount, 3);
+      expect(
+        data.toMarkdown(),
+        '|     |     |     |\n| --- | --- | --- |\n'
+        '|     |     |     |\n|     |     |     |',
       );
-      c.selection = const TextSelection.collapsed(offset: 2);
-      c.formatTable();
-      expect(c.text, '| a   | bb  |\n| --- | --- |\n| ccc | d   |');
     });
 
-    test('formatTable keeps escaped pipes intact', () {
-      final c = FormatTextController(
-        text: '| a\\|b | c |\n| --- | --- |\n| d | e |',
+    test('column letters follow the spreadsheet convention', () {
+      expect(TableData.columnLetter(0), 'A');
+      expect(TableData.columnLetter(25), 'Z');
+      expect(TableData.columnLetter(26), 'AA');
+    });
+  });
+
+  group('BodyEditor tables (Excel-style)', () {
+    Future<BodyEditorState> pumpEditor(
+      WidgetTester tester, {
+      String body = '',
+      List<FormatSpan> formats = const [],
+    }) async {
+      await tester.pumpWidget(MaterialApp(
+        home: Scaffold(
+          body: BodyEditor(
+            noteId: 'n1',
+            initialBody: body,
+            initialFormats: formats,
+            textColor: Colors.black,
+            onChanged: (_, _) {},
+          ),
+        ),
+      ));
+      await tester.pump();
+      return tester.state<BodyEditorState>(find.byType(BodyEditor));
+    }
+
+    testWidgets('insertTable creates a grid and Markdown source',
+        (tester) async {
+      final editor = await pumpEditor(tester);
+      editor.insertTable(2, 1);
+      await tester.pump();
+
+      expect(find.byType(ExcelTableBlock), findsOneWidget);
+      expect(find.text('A'), findsOneWidget);
+      expect(find.text('B'), findsOneWidget);
+      expect(find.text('1'), findsOneWidget);
+      expect(find.text('2'), findsOneWidget);
+      // The grid must actually lay out — a zero-height table is invisible
+      // and unclickable in the running app.
+      final size = tester.getSize(find.byType(ExcelTableBlock));
+      expect(size.height, greaterThan(80));
+      expect(size.width, greaterThan(180));
+      expect(
+        editor.text,
+        // An empty text line is kept above and below the grid for typing;
+        // empty cells are padded to the minimum column width.
+        '\n|     |     |\n| --- | --- |\n|     |     |\n',
       );
-      c.selection = const TextSelection.collapsed(offset: 2);
-      c.formatTable();
-      expect(c.text, '| a\\|b | c   |\n| ---- | --- |\n| d    | e   |');
     });
 
-    test('deleteTable removes the block without stray blank lines', () {
-      final c = FormatTextController(
-        text: 'A\n|  |\n| --- |\n|  |\nB',
+    testWidgets('clicking a cell and typing fills it (seeded edit)',
+        (tester) async {
+      final editor = await pumpEditor(tester);
+      editor.insertTable(1, 2);
+      await tester.pump();
+
+      final grid =
+          tester.state<ExcelTableBlockState>(find.byType(ExcelTableBlock));
+      grid.selectCell(0, 0); // single click: select only, no editor yet
+      await tester.pump();
+      expect(
+        find.descendant(
+          of: find.byType(ExcelTableBlock),
+          matching: find.byType(TextField),
+        ),
+        findsNothing,
       );
-      c.selection = const TextSelection.collapsed(offset: 5);
-      c.deleteTable();
-      expect(c.text, 'A\nB');
-    });
 
-    test('insertTableRowAbove keeps the caret in its cell', () {
-      final c = FormatTextController(
-        text: '| a | b |\n| --- | --- |\n| c | d |',
+      // A printable key event starts a seeded edit that replaces content.
+      await simulateKeyDownEvent(LogicalKeyboardKey.keyH, character: 'H');
+      await tester.pump();
+      expect(
+        find.descendant(
+          of: find.byType(ExcelTableBlock),
+          matching: find.byType(TextField),
+        ),
+        findsOneWidget,
       );
-      c.selection = const TextSelection.collapsed(offset: 2);
-      c.insertTableRowAbove();
-      expect(c.text, '|  |  |\n| --- | --- |\n| a | b |\n| c | d |');
-      expect(c.selection.baseOffset, 24);
-    });
+      expect(grid.table.cellAt(0, 0), ''); // not committed until Enter/Tab
 
-    test('insertTableRowBelow appends under the current row', () {
-      final c = FormatTextController(
-        text: '| a | b |\n| --- | --- |\n| c | d |',
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(ExcelTableBlock),
+          matching: find.byType(TextField),
+        ),
+        'Hello',
       );
-      c.selection = const TextSelection.collapsed(offset: 26);
-      c.insertTableRowBelow();
-      expect(c.text, '| a | b |\n| --- | --- |\n| c | d |\n|  |  |');
-      expect(c.selection.baseOffset, 26);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+
+      expect(grid.table.cellAt(0, 0), 'Hello');
+      expect(editor.text, contains('Hello'));
     });
 
-    test('insertTableColumnRight widens every row', () {
-      final c = FormatTextController(
-        text: '| a | b |\n| --- | --- |\n| c | d |',
+    testWidgets('typing into a cell updates the Markdown',
+        (tester) async {
+      final editor = await pumpEditor(tester);
+      editor.insertTable(2, 1);
+      await tester.pump();
+
+      final grid =
+          tester.state<ExcelTableBlockState>(find.byType(ExcelTableBlock));
+      grid.selectCell(0, 0, edit: true);
+      await tester.pump();
+
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(ExcelTableBlock),
+          matching: find.byType(TextField),
+        ),
+        'Name',
       );
-      c.selection = const TextSelection.collapsed(offset: 2);
-      c.insertTableColumnRight();
-      expect(c.text, '| a |  | b |\n| --- | --- | --- |\n| c |  | d |');
-      expect(c.selection.baseOffset, 2);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.tab);
+      await tester.pump();
+
+      // Tab committed the cell: the Markdown now holds the value.
+      expect(editor.text, contains('| Name |'));
     });
 
-    test('deleteTableRow removes the current row', () {
-      final c = FormatTextController(text: '| a |\n| --- |\n| b |');
-      c.selection = const TextSelection.collapsed(offset: 16);
-      c.deleteTableRow();
-      expect(c.text, '| a |\n| --- |');
-      expect(c.selection.baseOffset, 2);
-    });
+    testWidgets('Enter commits and moves down a row', (tester) async {
+      final editor = await pumpEditor(tester);
+      editor.insertTable(1, 2);
+      await tester.pump();
 
-    test('Tab selects a non-empty cell for quick replacement', () {
-      final c = FormatTextController(
-        text: '| ab | cd |\n| --- | --- |\n| ef | gh |',
+      final grid =
+          tester.state<ExcelTableBlockState>(find.byType(ExcelTableBlock));
+      grid.selectCell(0, 0, edit: true);
+      await tester.pump();
+
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(ExcelTableBlock),
+          matching: find.byType(TextField),
+        ),
+        'top',
       );
-      c.selection = const TextSelection.collapsed(offset: 3);
-      expect(c.handleTableTab(backwards: false), isTrue);
-      expect(c.selection.baseOffset, 7);
-      expect(c.selection.extentOffset, 9);
-    });
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
 
-    test('Enter moves down one row in the same column', () {
-      final c = FormatTextController(
-        text: '| a | b |\n| --- | --- |\n| c | d |',
+      expect(editor.text, contains('top'));
+      // The cell below (row 1) is now selected; typing replaces it.
+      grid.selectCell(1, 0, edit: true);
+      await tester.pump();
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(ExcelTableBlock),
+          matching: find.byType(TextField),
+        ),
+        'bottom',
       );
-      c.selection = const TextSelection.collapsed(offset: 2);
-      expect(c.handleTableEnter(), isTrue);
-      expect(c.text, '| a | b |\n| --- | --- |\n| c | d |');
-      expect(c.selection.baseOffset, 26);
+      await tester.pump();
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+
+      expect(editor.text, contains('bottom'));
+      final md = editor.text;
+      expect(md.indexOf('top'), lessThan(md.indexOf('bottom')));
     });
 
-    test('Enter on the last row appends a body row', () {
-      final c = FormatTextController(text: '| a |\n| --- |\n| b |');
-      c.selection = const TextSelection.collapsed(offset: 16);
-      expect(c.handleTableEnter(), isTrue);
-      expect(c.text, '| a |\n| --- |\n| b |\n|  |');
-      expect(c.selection.baseOffset, 22);
+    testWidgets('row and column operations edit the grid', (tester) async {
+      final editor = await pumpEditor(tester);
+      editor.insertTable(2, 1);
+      await tester.pump();
+
+      final grid =
+          tester.state<ExcelTableBlockState>(find.byType(ExcelTableBlock));
+      grid.selectCell(0, 0);
+      grid.insertColumn(before: false);
+      await tester.pump();
+      expect(grid.table.columnCount, 3);
+      expect(editor.text, contains('| --- | --- | --- |'));
+
+      grid.insertRow(above: true);
+      await tester.pump();
+      expect(grid.table.rowCount, 3); // header + new row + body row
+
+      grid.deleteColumn();
+      await tester.pump();
+      expect(grid.table.columnCount, 2);
+
+      grid.deleteRow();
+      await tester.pump();
+      expect(grid.table.rowCount, 2);
+    });
+
+    testWidgets('deleting the table removes the block and merges text',
+        (tester) async {
+      final editor = await pumpEditor(tester, body: 'before\nafter');
+      editor.insertTable(1, 1);
+      await tester.pump();
+      expect(find.byType(ExcelTableBlock), findsOneWidget);
+
+      final grid =
+          tester.state<ExcelTableBlockState>(find.byType(ExcelTableBlock));
+      grid.selectCell(0, 0);
+      grid.deleteTable();
+      await tester.pump();
+
+      expect(find.byType(ExcelTableBlock), findsNothing);
+      expect(editor.text, 'before\nafter');
+    });
+
+    testWidgets('an existing Markdown table renders as a grid',
+        (tester) async {
+      final editor = await pumpEditor(
+        tester,
+        body: 'Title\n| Name | Age |\n| ---- | --- |\n| Alex | 30  |\n',
+      );
+      await tester.pump();
+
+      expect(find.byType(ExcelTableBlock), findsOneWidget);
+      expect(find.text('Name'), findsOneWidget);
+      expect(find.text('Alex'), findsOneWidget);
+      // The plain text block stays editable beside the grid.
+      expect(find.text('Title'), findsOneWidget);
+      expect(editor.text,
+          'Title\n| Name | Age |\n| ---- | --- |\n| Alex | 30  |\n');
+    });
+
+    testWidgets('typing a Markdown table in text converts it to a grid',
+        (tester) async {
+      final editor = await pumpEditor(tester, body: 'keep me');
+      await tester.enterText(find.byType(TextField).first,
+          'keep me\n| a | b |\n| --- | --- |\n| 1 | 2 |');
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.byType(ExcelTableBlock), findsOneWidget);
+      expect(find.text('a'), findsOneWidget);
+      expect(find.text('1'), findsWidgets); // cell + row-number gutter
+      expect(editor.text, contains('| a   | b   |'));
+    });
+
+    testWidgets('text blocks keep editing between two tables',
+        (tester) async {
+      // The editor normalizes Markdown padding, so feed it padded source.
+      const body = '| a   |\n| --- |\n| 1   |\nhello\n'
+          '| b   |\n| --- |\n| 2   |';
+      final editor = await pumpEditor(tester, body: body);
+      await tester.pump();
+
+      expect(find.byType(ExcelTableBlock), findsNWidgets(2));
+      expect(find.text('hello'), findsOneWidget);
+      expect(editor.text, body);
     });
   });
 

@@ -1,23 +1,21 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../controllers/format_text_controller.dart';
 import '../controllers/notes_controller.dart';
-import '../models/format_span.dart';
+import '../models/format_span.dart' show FormatFlags;
 import '../models/note.dart';
 import '../theme/note_palette.dart';
 import '../utils/export.dart';
 import '../utils/format.dart';
 import '../utils/markdown_table.dart';
+import 'body_editor.dart' show BodyEditor, BodyEditorState, TableOp;
 import 'drawing/diagram_canvas.dart';
 
 enum EditorView { text, canvas }
 
 /// The right pane: colored note surface with a top bar (view toggle, palette,
-/// pin, exports, delete), a text editor with rich formatting + lists, or the
-/// diagram canvas.
+/// pin, exports, delete), the block-based text editor (rich text + Excel
+/// tables), or the diagram canvas.
 class EditorPane extends StatefulWidget {
   const EditorPane({super.key, required this.controller});
 
@@ -227,8 +225,8 @@ class _EditorPaneState extends State<EditorPane> {
 }
 
 /// Text editing surface: a formatting bar (bold/italic/underline/strike,
-/// checklists, bullets, clear) above the multiline body field. Toolbar
-/// actions keep the caret and selection in the field.
+/// lists, tables) above the block-based body editor. Toolbar actions keep
+/// the caret where it was.
 class _TextBody extends StatefulWidget {
   const _TextBody({
     required this.note,
@@ -245,95 +243,28 @@ class _TextBody extends StatefulWidget {
 }
 
 class _TextBodyState extends State<_TextBody> {
-  late final FocusNode _focusNode =
-      FocusNode(onKeyEvent: _handleTableKeys);
+  final GlobalKey<BodyEditorState> _editorKey = GlobalKey<BodyEditorState>();
 
-  late final FormatTextController _field = FormatTextController(
-    text: widget.note.body,
-    formats: widget.note.formats,
-  )..onEdited = _persist;
-
-  @override
-  void initState() {
-    super.initState();
-    _field.addListener(_onFieldChanged);
-    // A brand-new note opens ready for typing.
-    if (widget.note.body.isEmpty) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _focusNode.requestFocus();
-      });
-    }
-  }
-
-  @override
-  void didUpdateWidget(covariant _TextBody oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    // Adopt external changes (e.g. a future "insert date" action).
-    if (widget.note.body != oldWidget.note.body &&
-        widget.note.body != _field.text) {
-      _field.replaceAll(widget.note.body, widget.note.formats);
-    }
-  }
-
-  @override
-  void dispose() {
-    _field.dispose();
-    _focusNode.dispose();
-    super.dispose();
-  }
-
-  void _onFieldChanged() {
-    if (mounted) setState(() {});
-  }
-
-  void _persist() {
-    widget.controller.setContent(
-      widget.note,
-      _field.text,
-      _field.formats,
-    );
-  }
+  BodyEditorState? get _editor => _editorKey.currentState;
 
   /// Runs a toolbar action and hands focus straight back to the editor so
   /// typing continues without clicking into the field again.
   void _act(VoidCallback action) {
     action();
-    _focusNode.requestFocus();
-  }
-
-  /// Intercepts Tab / Shift+Tab (cell navigation) and Enter (row below)
-  /// while the caret is inside a Markdown table — exactly like Notepad.
-  /// Anything else (or any key outside a table) falls through to the field.
-  KeyEventResult _handleTableKeys(FocusNode node, KeyEvent event) {
-    if (event is! KeyDownEvent) return KeyEventResult.ignored;
-    final key = event.logicalKey;
-    final isTab = key == LogicalKeyboardKey.tab;
-    final isEnter = key == LogicalKeyboardKey.enter ||
-        key == LogicalKeyboardKey.numpadEnter;
-    if (!isTab && !isEnter) return KeyEventResult.ignored;
-    if (!_field.isInTable) return KeyEventResult.ignored;
-    if (isTab) {
-      final backwards = HardwareKeyboard.instance.isShiftPressed;
-      if (_field.handleTableTab(backwards: backwards)) {
-        return KeyEventResult.handled;
-      }
-      return KeyEventResult.ignored;
-    }
-    return _field.handleTableEnter()
-        ? KeyEventResult.handled
-        : KeyEventResult.ignored;
+    _editor?.refocus();
   }
 
   @override
   Widget build(BuildContext context) {
-    final words = _field.text
+    final body = _editor?.text ?? widget.note.body;
+    final words = body
         .trim()
         .split(RegExp(r'\s+'))
         .where((w) => w.isNotEmpty)
         .length;
     return Column(
       children: [
-        _formatBar(context, words),
+        _formatBar(context, words, body.length),
         Expanded(
           child: Padding(
             padding:
@@ -341,39 +272,28 @@ class _TextBodyState extends State<_TextBody> {
             child: CallbackShortcuts(
               bindings: {
                 const SingleActivator(LogicalKeyboardKey.keyB,
-                    control: true): () =>
-                    _act(() => _field.toggleFormat(FormatFlags.bold)),
+                        control: true): () =>
+                    _editor?.toggleFormat(FormatFlags.bold),
                 const SingleActivator(LogicalKeyboardKey.keyI,
-                    control: true): () =>
-                    _act(() => _field.toggleFormat(FormatFlags.italic)),
+                        control: true): () =>
+                    _editor?.toggleFormat(FormatFlags.italic),
                 const SingleActivator(LogicalKeyboardKey.keyU,
-                    control: true): () =>
-                    _act(() => _field.toggleFormat(FormatFlags.underline)),
+                        control: true): () =>
+                    _editor?.toggleFormat(FormatFlags.underline),
               },
-              child: TextField(
-                controller: _field,
-                focusNode: _focusNode,
-                maxLines: null,
-                expands: true,
-                keyboardType: TextInputType.multiline,
-                textAlignVertical: TextAlignVertical.top,
-                contextMenuBuilder: _tableContextMenu,
-                style: TextStyle(
-                  color: widget.textColor,
-                  fontSize: 15,
-                  height: 1.5,
+              child: BodyEditor(
+                key: _editorKey,
+                noteId: widget.note.id,
+                initialBody: widget.note.body,
+                initialFormats: widget.note.formats,
+                textColor: widget.textColor,
+                onChanged: (text, formats) => widget.controller.setContent(
+                  widget.note,
+                  text,
+                  formats,
                 ),
-                cursorColor: widget.textColor.withValues(alpha: 0.8),
-                decoration: InputDecoration(
-                  hintText: 'Take a note…',
-                  hintStyle: TextStyle(
-                    color: widget.textColor.withValues(alpha: 0.35),
-                    fontSize: 15,
-                  ),
-                  border: InputBorder.none,
-                  isDense: true,
-                  contentPadding: EdgeInsets.zero,
-                ),
+                onFocusChanged: () => setState(() {}),
+                onRequestInsertTable: _showInsertTableDialog,
               ),
             ),
           ),
@@ -390,12 +310,12 @@ class _TextBodyState extends State<_TextBody> {
       );
 
   Widget _formatButton(int flag, IconData icon, String tip) {
-    final active = _field.isActive(flag);
+    final active = _editor?.isActive(flag) ?? false;
     return IconButton(
       tooltip: tip,
       isSelected: active,
       icon: Icon(icon, size: 20),
-      onPressed: () => _act(() => _field.toggleFormat(flag)),
+      onPressed: () => _act(() => _editor?.toggleFormat(flag)),
       style: ButtonStyle(
         foregroundColor: WidgetStateProperty.resolveWith(
           (states) => states.contains(WidgetState.selected)
@@ -417,12 +337,12 @@ class _TextBodyState extends State<_TextBody> {
 
   /// H1/H2 toggle rendered as a text chip (no matching icon exists).
   Widget _textButton(String label, int flag, String tip) {
-    final active = _field.isActive(flag);
+    final active = _editor?.isActive(flag) ?? false;
     return Tooltip(
       message: tip,
       child: InkWell(
         borderRadius: BorderRadius.circular(6),
-        onTap: () => _act(() => _field.toggleFormat(flag)),
+        onTap: () => _act(() => _editor?.toggleFormat(flag)),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
           decoration: BoxDecoration(
@@ -452,22 +372,10 @@ class _TextBodyState extends State<_TextBody> {
     String two(int v) => v.toString().padLeft(2, '0');
     final stamp =
         '${now.day}/${now.month}/${now.year} ${two(now.hour)}:${two(now.minute)}';
-    final value = _field.value;
-    final sel = value.selection;
-    final from = sel.isValid
-        ? math.min(sel.baseOffset, sel.extentOffset)
-        : value.text.length;
-    final to = sel.isValid
-        ? math.max(sel.baseOffset, sel.extentOffset)
-        : value.text.length;
-    _field.value = value.copyWith(
-      text: value.text.replaceRange(from, to, stamp),
-      selection: TextSelection.collapsed(offset: from + stamp.length),
-      composing: TextRange.empty,
-    );
+    _editor?.insertText(stamp);
   }
 
-  Widget _formatBar(BuildContext context, int words) {
+  Widget _formatBar(BuildContext context, int words, int chars) {
     return Container(
       decoration: BoxDecoration(
         border: Border(
@@ -491,19 +399,19 @@ class _TextBodyState extends State<_TextBody> {
           _textButton('H2', FormatFlags.h2, 'Heading 2'),
           _sep(),
           _barButton(Icons.checklist, 'Checklist',
-              _field.toggleChecklist),
+              () => _editor?.toggleChecklist()),
           _barButton(Icons.format_list_bulleted, 'Bulleted list',
-              _field.toggleBulletList),
+              () => _editor?.toggleBulletList()),
           _barButton(Icons.format_list_numbered, 'Numbered list',
-              _field.toggleNumberedList),
+              () => _editor?.toggleNumberedList()),
           _tableButton(),
           _barButton(Icons.today_outlined, 'Insert date & time',
               _insertDateTime),
           _barButton(Icons.format_clear, 'Clear formatting',
-              _field.clearFormats),
+              () => _editor?.clearFormats()),
           const Spacer(),
           Text(
-            '$words words · ${_field.text.length} chars',
+            '$words words · $chars chars',
             style: TextStyle(
               fontSize: 11,
               color: widget.textColor.withValues(alpha: 0.45),
@@ -514,157 +422,64 @@ class _TextBodyState extends State<_TextBody> {
     );
   }
 
-  // ---- tables (Notepad-style) -------------------------------------------
+  // ---- tables (Excel-style) ----------------------------------------------
 
-  /// The Table button mirrors Windows Notepad: outside a table it inserts
-  /// one (grid picker + custom dialog); inside a table it opens the Table
-  /// editing menu (rows, columns, select, delete, format, preview).
+  /// Outside a table the button inserts one (grid picker + custom dialog);
+  /// with a table focused it becomes the Table menu (rows, columns, delete).
   Widget _tableButton() {
-    if (!_field.isInTable) {
+    if (!(_editor?.isTableFocused ?? false)) {
       return _barButton(
         Icons.table_chart_outlined,
         'Insert table',
         _showInsertTableDialog,
       );
     }
-    return PopupMenuButton<_TableAction>(
+    return PopupMenuButton<TableOp>(
       tooltip: 'Table',
       icon: Icon(
         Icons.table_chart_outlined,
         size: 20,
         color: widget.textColor.withValues(alpha: 0.55),
       ),
-      onSelected: (a) {
-        if (a == _TableAction.preview) {
-          _showTablePreview();
-        } else {
-          _act(() => _applyTableAction(a));
-        }
-      },
+      onSelected: (op) => _editor?.applyTableOp(op),
       itemBuilder: (_) => const [
         PopupMenuItem(
-          value: _TableAction.rowAbove,
+          value: TableOp.rowAbove,
           height: 40,
           child: Text('Insert row above'),
         ),
         PopupMenuItem(
-          value: _TableAction.rowBelow,
+          value: TableOp.rowBelow,
           height: 40,
           child: Text('Insert row below'),
         ),
         PopupMenuItem(
-          value: _TableAction.columnLeft,
+          value: TableOp.columnLeft,
           height: 40,
           child: Text('Insert column left'),
         ),
         PopupMenuItem(
-          value: _TableAction.columnRight,
+          value: TableOp.columnRight,
           height: 40,
           child: Text('Insert column right'),
         ),
         PopupMenuDivider(height: 8),
         PopupMenuItem(
-          value: _TableAction.selectRow,
-          height: 40,
-          child: Text('Select row'),
-        ),
-        PopupMenuItem(
-          value: _TableAction.selectTable,
-          height: 40,
-          child: Text('Select table'),
-        ),
-        PopupMenuDivider(height: 8),
-        PopupMenuItem(
-          value: _TableAction.deleteRow,
+          value: TableOp.deleteRow,
           height: 40,
           child: Text('Delete row'),
         ),
         PopupMenuItem(
-          value: _TableAction.deleteColumn,
+          value: TableOp.deleteColumn,
           height: 40,
           child: Text('Delete column'),
         ),
         PopupMenuItem(
-          value: _TableAction.deleteTable,
+          value: TableOp.deleteTable,
           height: 40,
           child: Text('Delete table'),
         ),
-        PopupMenuDivider(height: 8),
-        PopupMenuItem(
-          value: _TableAction.format,
-          height: 40,
-          child: Text('Fit columns to content'),
-        ),
-        PopupMenuItem(
-          value: _TableAction.preview,
-          height: 40,
-          child: Text('Preview table'),
-        ),
       ],
-    );
-  }
-
-  void _applyTableAction(_TableAction action) {
-    switch (action) {
-      case _TableAction.rowAbove:
-        _field.insertTableRowAbove();
-      case _TableAction.rowBelow:
-        _field.insertTableRowBelow();
-      case _TableAction.columnLeft:
-        _field.insertTableColumnLeft();
-      case _TableAction.columnRight:
-        _field.insertTableColumnRight();
-      case _TableAction.selectRow:
-        _field.selectTableRow();
-      case _TableAction.selectTable:
-        _field.selectTable();
-      case _TableAction.deleteRow:
-        _field.deleteTableRow();
-      case _TableAction.deleteColumn:
-        _field.deleteTableColumn();
-      case _TableAction.deleteTable:
-        _field.deleteTable();
-      case _TableAction.format:
-        _field.formatTable();
-      case _TableAction.preview:
-        // Handled by the caller (needs a BuildContext for the dialog).
-        break;
-    }
-  }
-
-  /// Right-click menu additions mirroring Notepad: `Insert table` outside a
-  /// table, row/column/delete actions inside one.
-  Widget _tableContextMenu(
-    BuildContext context,
-    EditableTextState editableTextState,
-  ) {
-    final items = [...editableTextState.contextMenuButtonItems];
-    void add(String label, VoidCallback fn) {
-      items.add(
-        ContextMenuButtonItem(
-          label: label,
-          onPressed: () {
-            editableTextState.hideToolbar();
-            fn();
-          },
-        ),
-      );
-    }
-
-    if (_field.isInTable) {
-      add('Insert row above', () => _act(_field.insertTableRowAbove));
-      add('Insert row below', () => _act(_field.insertTableRowBelow));
-      add('Insert column left', () => _act(_field.insertTableColumnLeft));
-      add('Insert column right', () => _act(_field.insertTableColumnRight));
-      add('Delete row', () => _act(_field.deleteTableRow));
-      add('Delete column', () => _act(_field.deleteTableColumn));
-      add('Delete table', () => _act(_field.deleteTable));
-    } else {
-      add('Insert table…', _showInsertTableDialog);
-    }
-    return AdaptiveTextSelectionToolbar.buttonItems(
-      anchors: editableTextState.contextMenuAnchors,
-      buttonItems: items,
     );
   }
 
@@ -674,39 +489,12 @@ class _TextBodyState extends State<_TextBody> {
       builder: (_) => const _InsertTableDialog(),
     );
     if (size == null || !mounted) return;
-    _act(() => _field.insertTable(size.columns, size.rows));
+    _editor?.insertTable(size.columns, size.rows);
   }
-
-  void _showTablePreview() {
-    final table = _field.currentTable();
-    if (table == null) return;
-    showDialog<void>(
-      context: context,
-      builder: (_) => _TablePreviewDialog(
-        table: table,
-        textColor: widget.textColor,
-      ),
-    );
-  }
-}
-
-/// Table-menu actions (mirrors the Notepad Table submenu).
-enum _TableAction {
-  rowAbove,
-  rowBelow,
-  columnLeft,
-  columnRight,
-  selectRow,
-  selectTable,
-  deleteRow,
-  deleteColumn,
-  deleteTable,
-  format,
-  preview,
 }
 
 /// Grid-picker result: [columns] text columns, [rows] body rows (the header
-/// row is always added automatically, like Notepad).
+/// row is always added automatically).
 class _TableSize {
   const _TableSize({required this.columns, required this.rows});
 
@@ -714,8 +502,8 @@ class _TableSize {
   final int rows;
 }
 
-/// Notepad-style insert dialog: hover a grid for a quick size, or type exact
-/// columns/rows and press Insert.
+/// Insert dialog: hover a grid for a quick size, or type exact columns/rows
+/// and press Insert.
 class _InsertTableDialog extends StatefulWidget {
   const _InsertTableDialog();
 
@@ -743,7 +531,9 @@ class _InsertTableDialogState extends State<_InsertTableDialog> {
     final c = columns < 1
         ? 1
         : (columns > kMaxTableColumns ? kMaxTableColumns : columns);
-    final r = rows < 1 ? 1 : (rows > kMaxTableBodyRows ? kMaxTableBodyRows : rows);
+    final r = rows < 1
+        ? 1
+        : (rows > kMaxTableRows ? kMaxTableRows : rows);
     Navigator.of(context).pop(_TableSize(columns: c, rows: r));
   }
 
@@ -849,70 +639,6 @@ class _InsertTableDialogState extends State<_InsertTableDialog> {
             int.tryParse(_rowsController.text.trim()) ?? _hoverRows,
           ),
           child: const Text('Insert'),
-        ),
-      ],
-    );
-  }
-}
-
-/// Read-only rendering of the current table — the formatted counterpart to
-/// the Markdown source, like Notepad's formatted table view.
-class _TablePreviewDialog extends StatelessWidget {
-  const _TablePreviewDialog({required this.table, required this.textColor});
-
-  final MarkdownTable table;
-  final Color textColor;
-
-  @override
-  Widget build(BuildContext context) {
-    final border = TableBorder.all(
-      color: textColor.withValues(alpha: 0.3),
-      width: 1,
-    );
-    Widget cell(String value, {required bool header}) => Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-          child: Text(
-            value.isEmpty ? ' ' : value,
-            style: TextStyle(
-              color: textColor,
-              fontWeight: header ? FontWeight.w700 : null,
-            ),
-          ),
-        );
-    return AlertDialog(
-      title: const Text('Table preview'),
-      contentPadding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
-      content: SizedBox(
-        width: 440,
-        height: 360,
-        child: SingleChildScrollView(
-          child: SingleChildScrollView(
-            scrollDirection: Axis.horizontal,
-            child: Table(
-              border: border,
-              defaultColumnWidth: const IntrinsicColumnWidth(),
-              children: [
-                for (var r = 0; r < table.rows.length; r++)
-                  TableRow(
-                    decoration: r == 0
-                        ? BoxDecoration(
-                            color: textColor.withValues(alpha: 0.08),
-                          )
-                        : null,
-                    children: [
-                      for (final value in table.rows[r])
-                        cell(value, header: r == 0),
-                    ],
-                  ),
-              ],
-            ),
-          ),
-        ),
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('Close'),
         ),
       ],
     );
