@@ -192,8 +192,11 @@ class TableData {
   String cellAt(int row, int col) =>
       rows[row][col.clamp(0, columnCount - 1)];
 
+  /// Sets a cell. Newlines are flattened to spaces: a raw newline inside a
+  /// cell would split the serialized pipe row and corrupt the table.
   void setCell(int row, int col, String value) {
-    rows[row][col.clamp(0, columnCount - 1)] = value;
+    final clean = value.replaceAll('\r\n', ' ').replaceAll('\n', ' ');
+    rows[row][col.clamp(0, columnCount - 1)] = clean;
   }
 
   /// Inserts an empty row at [at] (0-based; header is row 0). Returns the new

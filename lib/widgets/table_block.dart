@@ -131,6 +131,11 @@ class ExcelTableBlockState extends State<ExcelTableBlock> {
   @override
   void dispose() {
     widget.focusNode.removeListener(_onBlockFocusChanged);
+    // A cell editor may still be open when the block is removed (note
+    // switch, table deleted from the toolbar); release it. Children have
+    // already unmounted by the time State.dispose runs.
+    _cellFocus?.dispose();
+    _cellCtrl?.dispose();
     super.dispose();
   }
 
@@ -196,7 +201,9 @@ class ExcelTableBlockState extends State<ExcelTableBlock> {
 
   void selectCell(int row, int col, {bool edit = false}) {
     widget.onActivated();
-    if (_editing) _teardownEditor();
+    // Clicking away commits the in-progress edit (Excel behavior); only
+    // Escape discards.
+    if (_editing) _commit();
     setState(() {
       _activeRow = _clampInt(row, 0, _table.rowCount - 1);
       _activeCol = _clampInt(col, 0, _table.columnCount - 1);
@@ -213,7 +220,7 @@ class ExcelTableBlockState extends State<ExcelTableBlock> {
   /// content starts out fully selected.
   void _startEditing({String? seed, bool selectAll = false}) {
     widget.onActivated();
-    if (_editing) _teardownEditor();
+    if (_editing) _commit(); // defensive; callers normally commit first
     final text = seed ?? _table.cellAt(_activeRow, _activeCol);
     setState(() {
       _editing = true;
@@ -377,7 +384,7 @@ class ExcelTableBlockState extends State<ExcelTableBlock> {
   /// Moves the selection, clamped to the grid (Excel behavior — no wrap,
   /// no automatic row creation; use the ＋ row / ＋ column helpers).
   void _moveSelection(int dRow, int dCol) {
-    if (_editing) _teardownEditor();
+    if (_editing) _commit();
     setState(() {
       _activeRow = _clampInt(_activeRow + dRow, 0, _table.rowCount - 1);
       _activeCol = _clampInt(_activeCol + dCol, 0, _table.columnCount - 1);
@@ -388,25 +395,25 @@ class ExcelTableBlockState extends State<ExcelTableBlock> {
   // ---- structure operations (toolbar + context menus) ----------------------
 
   void insertRow({required bool above}) {
+    if (_editing) _commit(); // land the edit before shifting rows
     final newIdx = _table.insertRowAt(above ? _activeRow : _activeRow + 1);
     if (newIdx == null) return;
-    if (_editing) _teardownEditor();
     setState(() => _activeRow = newIdx);
     widget.focusNode.requestFocus();
     widget.onChanged();
   }
 
   void insertColumn({required bool before}) {
+    if (_editing) _commit(); // land the edit before shifting columns
     final newIdx = _table.insertColumnAt(before ? _activeCol : _activeCol + 1);
     if (newIdx == null) return;
-    if (_editing) _teardownEditor();
     setState(() => _activeCol = newIdx);
     widget.focusNode.requestFocus();
     widget.onChanged();
   }
 
   void deleteRow() {
-    if (_editing) _teardownEditor();
+    if (_editing) _commit(); // land the edit before removing the row
     if (!_table.deleteRowAt(_activeRow)) {
       widget.onDeleted();
       return;
@@ -417,7 +424,7 @@ class ExcelTableBlockState extends State<ExcelTableBlock> {
   }
 
   void deleteColumn() {
-    if (_editing) _teardownEditor();
+    if (_editing) _commit(); // land the edit before removing the column
     if (!_table.deleteColumnAt(_activeCol)) {
       widget.onDeleted();
       return;
@@ -434,7 +441,7 @@ class ExcelTableBlockState extends State<ExcelTableBlock> {
   }
 
   void deleteTable() {
-    if (_editing) _teardownEditor();
+    if (_editing) _commit();
     widget.onDeleted();
   }
 

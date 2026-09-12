@@ -614,6 +614,69 @@ void main() {
       expect(editor.text, contains('Hello'));
     });
 
+    test('cells never contain raw newlines (paste safety)', () {
+      final data = TableData.parse(
+        '| a | b |\n| --- | --- |\n| c | d |'.split('\n'),
+      );
+      data.setCell(1, 0, 'multi\nline\r\ntext');
+      expect(data.cellAt(1, 0), 'multi line text');
+      // Serialization must keep one physical line per table row.
+      expect(data.toMarkdown().split('\n').length, 3);
+    });
+
+    testWidgets('clicking another cell commits the edit (no data loss)',
+        (tester) async {
+      final editor = await pumpEditor(tester);
+      editor.insertTable(2, 2);
+      await tester.pump();
+
+      final grid =
+          tester.state<ExcelTableBlockState>(find.byType(ExcelTableBlock));
+      grid.selectCell(0, 0, edit: true);
+      await tester.pump();
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(ExcelTableBlock),
+          matching: find.byType(TextField),
+        ),
+        'kept',
+      );
+      await tester.pump();
+
+      // Clicking a different cell must commit, not discard, the buffer.
+      grid.selectCell(1, 1);
+      await tester.pump();
+
+      expect(grid.table.cellAt(0, 0), 'kept');
+      expect(editor.text, contains('kept'));
+    });
+
+    testWidgets('row and column operations commit an open edit first',
+        (tester) async {
+      final editor = await pumpEditor(tester);
+      editor.insertTable(2, 2);
+      await tester.pump();
+
+      final grid =
+          tester.state<ExcelTableBlockState>(find.byType(ExcelTableBlock));
+      grid.selectCell(0, 0, edit: true);
+      await tester.pump();
+      await tester.enterText(
+        find.descendant(
+          of: find.byType(ExcelTableBlock),
+          matching: find.byType(TextField),
+        ),
+        'saved',
+      );
+      await tester.pump();
+
+      grid.insertRow(above: true);
+      await tester.pump();
+
+      expect(grid.table.cellAt(1, 0), 'saved');
+      expect(editor.text, contains('saved'));
+    });
+
     testWidgets('typing into a cell updates the Markdown',
         (tester) async {
       final editor = await pumpEditor(tester);

@@ -243,6 +243,8 @@ class _TextBody extends StatefulWidget {
 }
 
 class _TextBodyState extends State<_TextBody> {
+  static final RegExp _whitespace = RegExp(r'\s+');
+
   final GlobalKey<BodyEditorState> _editorKey = GlobalKey<BodyEditorState>();
 
   BodyEditorState? get _editor => _editorKey.currentState;
@@ -259,7 +261,7 @@ class _TextBodyState extends State<_TextBody> {
     final body = _editor?.text ?? widget.note.body;
     final words = body
         .trim()
-        .split(RegExp(r'\s+'))
+        .split(_whitespace)
         .where((w) => w.isNotEmpty)
         .length;
     return Column(

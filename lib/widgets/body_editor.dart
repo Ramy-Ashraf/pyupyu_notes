@@ -144,8 +144,8 @@ class BodyEditorState extends State<BodyEditor> {
 
   // ---- public API (toolbar) ------------------------------------------------
 
-  /// The recomposed Markdown body.
-  String get text => _composeBlocks(_blocks);
+  /// The recomposed Markdown body (kept current on every change).
+  String get text => _syncedBody;
 
   /// Whether the focused block is a table (drives the toolbar Table menu).
   bool get isTableFocused {
@@ -539,6 +539,11 @@ class BodyEditorState extends State<BodyEditor> {
   // ---- change handling -----------------------------------------------------
 
   void _onTextBlockChanged(_TextBlock block) {
+    if (!_blocks.contains(block)) {
+      // Stale notification from a block replaced by a rebuild (its disposal
+      // is deferred by a frame) — it is no longer part of the document.
+      return;
+    }
     final doc = _composeBlocks(_blocks);
     final kinds = [for (final b in _blocks) b is _TableBlock];
     if (!listEquals(kinds, _segmentKinds(doc))) {
