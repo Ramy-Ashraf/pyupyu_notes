@@ -40,6 +40,10 @@ Rect strokeLocalBounds(StrokeItem s) {
       tp.height,
     ).inflate(3);
   }
+  if (s.type == StrokeType.sticky && s.points.length >= 2) {
+    return Rect.fromPoints(s.points[0], s.points[1])
+        .inflate(s.width / 2 + 4);
+  }
   var r = Rect.fromPoints(s.points.first, s.points.first);
   for (final p in s.points) {
     r = r.expandToInclude(Rect.fromPoints(p, p));
@@ -158,9 +162,49 @@ void _paintStrokeUnrotated(
     case StrokeType.ellipse:
       if (s.points.length < 2) return;
       _paintRoughShape(canvas, s, paint);
+    case StrokeType.sticky:
+      if (s.points.length < 2) return;
+      _paintSticky(canvas, s, paint);
     case StrokeType.text:
       if (s.points.isEmpty || (s.text?.isEmpty ?? true)) return;
       layoutTextLabel(s, color: paint.color).paint(canvas, s.points.first);
+  }
+}
+
+// ---- sticky notes -----------------------------------------------------------
+
+/// Canvas sticky note: soft-filled rectangle with a folded corner plus
+/// wrapped text content.
+void _paintSticky(Canvas canvas, StrokeItem s, Paint paint) {
+  final rect = Rect.fromPoints(s.points[0], s.points[1]);
+  final fill = Paint()
+    ..color = s.color.withValues(alpha: 0.28)
+    ..style = PaintingStyle.fill;
+  canvas.drawRect(rect, fill);
+  canvas.drawRect(rect, paint);
+  // Folded corner.
+  const fold = 12.0;
+  final foldPath = Path()
+    ..moveTo(rect.right, rect.top)
+    ..lineTo(rect.right - fold, rect.top)
+    ..lineTo(rect.right, rect.top + fold)
+    ..close();
+  canvas.drawPath(
+      foldPath, Paint()..color = s.color.withValues(alpha: 0.45));
+  final text = s.text;
+  if (text != null && text.isNotEmpty) {
+    final tp = TextPainter(
+      text: TextSpan(
+        text: text,
+        style: TextStyle(
+          color: paint.color,
+          fontSize: 14,
+          height: 1.3,
+        ),
+      ),
+      textDirection: TextDirection.ltr,
+    )..layout(maxWidth: math.max(rect.width - 16, 20));
+    tp.paint(canvas, rect.topLeft + const Offset(8, 8));
   }
 }
 
@@ -531,9 +575,10 @@ bool strokeHitTest(StrokeItem s, Offset p, double radius) {
       }
       return false;
     case StrokeType.rectangle:
+    case StrokeType.sticky:
       if (s.points.length < 2) return false;
       final r = Rect.fromPoints(s.points[0], s.points[1]);
-      if (s.filled) return r.contains(p);
+      if (s.filled || s.type == StrokeType.sticky) return r.contains(p);
       if (!r.inflate(radius).contains(p)) return false;
       final dEdge = math.min(
         math.min(p.dx - r.left, r.right - p.dx),

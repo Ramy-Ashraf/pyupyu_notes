@@ -1,7 +1,17 @@
 import 'dart:ui' show Color, Offset;
 
 /// The kind of drawn item on a note's diagram canvas.
-enum StrokeType { pen, marker, line, rectangle, ellipse, diamond, arrow, text }
+enum StrokeType {
+  pen,
+  marker,
+  line,
+  rectangle,
+  ellipse,
+  diamond,
+  arrow,
+  text,
+  sticky,
+}
 
 /// Fill looks for closed shapes (Excalidraw-style).
 class FillStyles {
@@ -19,7 +29,8 @@ class DashStyles {
 
 /// A single drawn item on the diagram canvas, stored in world coordinates.
 /// For [StrokeType.text] the first point is the top-left anchor and [width]
-/// holds the font size.
+/// holds the font size. For [StrokeType.sticky] points are [topLeft,
+/// bottomRight] like a rectangle and [text] is the sticky content.
 class StrokeItem {
   StrokeItem({
     required this.id,
@@ -33,6 +44,7 @@ class StrokeItem {
     this.seed = 0,
     this.angle = 0,
     this.text,
+    this.locked = false,
   });
 
   final String id;
@@ -61,10 +73,43 @@ class StrokeItem {
   /// (Excalidraw-style transform).
   final double angle;
 
-  /// Label content for [StrokeType.text].
+  /// Label content for [StrokeType.text] and [StrokeType.sticky].
   final String? text;
 
+  /// Locked strokes cannot be moved, resized or erased until unlocked.
+  final bool locked;
+
   Color get color => Color(colorValue);
+
+  StrokeItem copyWith({
+    String? id,
+    StrokeType? type,
+    List<Offset>? points,
+    int? colorValue,
+    double? width,
+    bool? filled,
+    int? fillStyle,
+    int? dash,
+    int? seed,
+    double? angle,
+    String? Function()? text,
+    bool? locked,
+  }) {
+    return StrokeItem(
+      id: id ?? this.id,
+      type: type ?? this.type,
+      points: points ?? List<Offset>.of(this.points),
+      colorValue: colorValue ?? this.colorValue,
+      width: width ?? this.width,
+      filled: filled ?? this.filled,
+      fillStyle: fillStyle ?? this.fillStyle,
+      dash: dash ?? this.dash,
+      seed: seed ?? this.seed,
+      angle: angle ?? this.angle,
+      text: text != null ? text() : this.text,
+      locked: locked ?? this.locked,
+    );
+  }
 
   Map<String, dynamic> toJson() => {
         'id': id,
@@ -80,6 +125,7 @@ class StrokeItem {
         'seed': seed,
         'angle': angle,
         if (text != null) 'text': text,
+        if (locked) 'locked': true,
       };
 
   factory StrokeItem.fromJson(Map<String, dynamic> json) {
@@ -108,6 +154,7 @@ class StrokeItem {
       seed: (json['seed'] as num?)?.toInt() ?? (id.hashCode & 0x7fffffff),
       angle: (json['angle'] as num?)?.toDouble() ?? 0,
       text: json['text'] as String?,
+      locked: json['locked'] as bool? ?? false,
     );
   }
 }

@@ -112,35 +112,72 @@ Covers note/stroke/format JSON round-trips, rich-text span adjustment
 across edits, smart list continuation, checklist/bullet cycling, composing
 rendering, and store save/backup/recovery.
 
+## Features (v2)
+
+### Organization
+- Tags (`#tag` inline + explicit tag editor), tag filter chips + counts
+- Favorites (★) separate from pins; Archived; Trash with restore,
+  delete-forever and 30-day auto-purge + empty-trash
+- Sort: updated / created / title / color; color filter; full-text search
+  across body, tags and diagram labels with match highlighting
+- Views: All / Favorites / Due / Archived / Trash
+
+### Editor
+- Code + quote formatting, links, dividers
+- Note templates (meeting, todo, project plan, blank table)
+- Version history (30 snapshots) with restore
+- Reminders / due dates with due strip + in-app due notifications
+- PIN lock per note (UI lock) with unlock card
+- Word goals + writing stats, checklist progress bars
+- Attachments (name + path) per note
+- Export: `.txt`, `.md`, printable `.html` (→ PDF via browser),
+  tables `.csv`, diagram `.png` / `.svg`, copy SVG to clipboard
+
+### Draw mode
+- Canvas sticky notes (drag to size, double-click to edit text)
+- Laser pointer (temporary red trail, never saved)
+- Snap-to-grid toggle, shape locking (select-only, skip erase/move),
+  layers panel (reorder, lock, jump-to)
+- Sticky + lock persist in JSON; SVG export covers all stroke types
+
+### Data & polish
+- Daily timestamped backups (last 7) + one-click restore point via
+  `backups/`; best-effort mirror into OneDrive/Dropbox folder
+- Accent color override + compact density; `Ctrl+Shift+F` global search
+  focus, `Ctrl+K` quick capture; calendar/reminders dialog
+- All new fields are backward compatible — old `notes.json` files load
+  with defaults.
+
 ## Project structure
 
 ```
 lib/
-├── main.dart                     # app entry + theming
+├── main.dart                     # app entry + theming (accent, density)
 ├── controllers/
-│   ├── notes_controller.dart     # state: notes, selection, search, theme
+│   ├── notes_controller.dart     # state: notes, views, tags, reminders, lock
 │   └── format_text_controller.dart # rich-text field + lists + rendering
 ├── models/
-│   ├── note.dart                 # note model (text + strokes + formats)
-│   ├── stroke_item.dart          # single drawn item on the canvas
+│   ├── note.dart                 # note model + history + attachments
+│   ├── stroke_item.dart          # canvas item (+ sticky, locked)
 │   └── format_span.dart          # rich-text ranges + edit remapping
 ├── services/
-│   └── notes_store.dart          # atomic JSON persistence + backup
+│   └── notes_store.dart          # atomic JSON + .bak + daily backups + mirror
 ├── theme/
 │   └── note_palette.dart         # Sticky-Notes-style color palette
 ├── utils/
 │   ├── format.dart               # date labels
 │   ├── markdown_table.dart       # Notepad-style pipe-table model + edits
-│   └── export.dart               # .txt / .png export to Downloads
+│   ├── note_templates.dart       # built-in templates
+│   └── export.dart               # .txt/.md/.html/.csv/.png/.svg exports
 ├── pages/
-│   └── home_page.dart            # two-pane layout + global shortcuts
+│   └── home_page.dart            # two-pane layout + shortcuts + due strip
 └── widgets/
-    ├── sidebar.dart              # note list, search, shortcuts help
-    ├── note_card.dart            # sidebar card + context menu
-    ├── editor_pane.dart          # top bar, rich editor, exports
+    ├── sidebar.dart              # views, search, tags, sort, calendar
+    ├── note_card.dart            # card + badges + progress + highlight
+    ├── editor_pane.dart          # top bar, lock, history, tags, goals, files
     └── drawing/
-        ├── diagram_canvas.dart   # interactive canvas (tools, undo, menus)
-        ├── diagram_toolbar.dart  # floating tool toolbar + label dialog
+        ├── diagram_canvas.dart   # canvas (+ sticky, laser, snap, lock, layers)
+        ├── diagram_toolbar.dart  # tool palette (+ sticky, laser)
         ├── diagram_painter.dart  # grid + strokes painter, thumbnails
-        └── stroke_render.dart    # shared stroke painting + hit-testing
+        └── stroke_render.dart    # shared painting + hit-testing (+ sticky)
 ```

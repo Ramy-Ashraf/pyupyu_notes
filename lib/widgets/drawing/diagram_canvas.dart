@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
@@ -52,6 +53,11 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
   int _fillStyle = FillStyles.hachure;
   int _dashStyle = DashStyles.solid;
   bool _showGrid = true;
+  bool _snapToGrid = false;
+
+  // Laser pointer: temporary red trail, never saved to the note.
+  List<Offset> _laserTrail = [];
+  bool _laserActive = false;
 
   // In-place text label editing (Excalidraw-style): a borderless field sits
   // right on the canvas; Esc or a click elsewhere commits it.
@@ -98,6 +104,15 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
 
   Offset _toWorld(Offset local) => (local - _offset) / _scale;
   Offset get _center => _viewSize.center(Offset.zero);
+
+  Offset _maybeSnap(Offset w) {
+    if (!_snapToGrid) return w;
+    const grid = 8.0;
+    return Offset(
+      (w.dx / grid).roundToDouble() * grid,
+      (w.dy / grid).roundToDouble() * grid,
+    );
+  }
 
   /// Whether a canvas-local pointer position is still over the canvas. The
   /// down-time hit test keeps delivering moves while the button is held,
@@ -175,6 +190,7 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
     }
 
     final w = _toWorld(local);
+    final ws = _maybeSnap(w);
     switch (tool) {
       case CanvasTool.select:
         _dragStartList = List<StrokeItem>.of(widget.note.strokes);
@@ -184,7 +200,7 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
         final single =
             _selectedStrokes.length == 1 ? _selectedStrokes.first : null;
         var handled = false;
-        if (single != null) {
+        if (single != null && !single.locked) {
           final box = selectionBoxFor(single);
           final pl = box.toLocal(w);
           final tol = 7 / _scale;
@@ -206,7 +222,11 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
         }
         if (!handled) {
           final hit = _topStrokeAt(w);
-          if (hit != null && _shiftHeld && _selectedIds.contains(hit.id)) {
+          if (hit != null && hit.locked) {
+            // Locked strokes: select only, never drag.
+            _selectedIds = {hit.id};
+            _drag = _SelectDrag.none;
+          } else if (hit != null && _shiftHeld && _selectedIds.contains(hit.id)) {
             // Shift-click removes from the selection; no drag starts.
             _selectedIds = {..._selectedIds}..remove(hit.id);
             _drag = _SelectDrag.none;
@@ -221,7 +241,7 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
               selectionBoxFor(single).localRect
                   .contains(selectionBoxFor(single).toLocal(w))) {
             // Dragging anywhere inside the single-selection box moves it.
-            _startMoveDrag(w);
+            if (!single.locked) _startMoveDrag(w);
           } else {
             // Empty space: rubber-band marquee (clears the selection).
             _drag = _SelectDrag.marquee;
@@ -234,6 +254,22 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
         break;
       case CanvasTool.text:
         break; // handled on pointer-up (a click, not a drag, opens the dialog)
+      case CanvasTool.sticky:
+        _active = StrokeItem(
+          id: _newId(),
+          type: StrokeType.sticky,
+          points: [ws, ws],
+          colorValue: _ink.toARGB32(),
+          width: _width,
+          filled: true,
+          fillStyle: FillStyles.solid,
+          dash: DashStyles.solid,
+          seed: _newSeed(),
+          text: '',
+        );
+      case CanvasTool.laser:
+        _laserActive = true;
+        _laserTrail = [w];
       case CanvasTool.pen:
       case CanvasTool.marker:
         _active = StrokeItem(
@@ -261,7 +297,7 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
             CanvasTool.diamond => StrokeType.diamond,
             _ => StrokeType.arrow,
           },
-          points: [w, w],
+          points: [ws, ws],
           colorValue: _ink.toARGB32(),
           width: _width,
           filled: _fillStyle >= 0 &&
@@ -283,6 +319,11 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
     }
     final local = e.localPosition;
 
+    if (_laserActive) {
+      setState(() => _laserTrail.add(_toWorld(local)));
+      return;
+    }
+
     if (_tool == CanvasTool.select && _drag != _SelectDrag.none) {
       final w = _toWorld(local);
       switch (_drag) {
@@ -291,7 +332,7 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
           if (delta.distance > 2 / _scale) _dragMoved = true;
           widget.controller.setStrokes(widget.note, [
             for (final s in _dragStartList)
-              _dragOrigMap[s.id] != null
+              _dragOrigMap[s.id] != null && !_dragOrigMap[s.id]!.locked
                   ? _translated(_dragOrigMap[s.id]!, delta)
                   : s,
           ]);
@@ -303,7 +344,7 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
           _marquee = Rect.fromPoints(_marqueeStart, w);
           _selectedIds = {
             for (final s in widget.note.strokes)
-              if (strokeBounds(s).overlaps(_marquee!)) s.id,
+              if (!s.locked && strokeBounds(s).overlaps(_marquee!)) s.id,
           };
         case _SelectDrag.none:
           break;
@@ -327,7 +368,7 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
     }
     if (_active != null && t != null) {
       // Shapes end at the canvas edge instead of spilling past it.
-      final w = _toWorld(_clampToView(local));
+      final w = _maybeSnap(_toWorld(_clampToView(local)));
       setState(() => _active!.points[1] = _snapShape(w));
       return;
     }
@@ -371,6 +412,15 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
       _panning = false;
       return;
     }
+    if (_laserActive) {
+      _laserActive = false;
+      // Fade out shortly after release.
+      Future.delayed(const Duration(milliseconds: 800), () {
+        if (mounted && !_laserActive) setState(() => _laserTrail = []);
+      });
+      setState(() {});
+      return;
+    }
     if (_tool == CanvasTool.select && _drag != _SelectDrag.none) {
       // Commit one undo step from the drag-start snapshot. This covers
       // moves, resizes and rotations (which were applied live) and also
@@ -395,9 +445,20 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
     if (active != null) {
       final keep = switch (active.type) {
         StrokeType.pen || StrokeType.marker => true,
+        StrokeType.sticky =>
+          (active.points[0] - active.points[1]).distance > 10,
         _ => (active.points[0] - active.points[1]).distance > 6,
       };
-      if (keep) _commitAdded(active);
+      if (keep) {
+        _commitAdded(active);
+        if (active.type == StrokeType.sticky) {
+          _selectedIds = {active.id};
+          // Ask for sticky text right away.
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted) _editStickyDialog(active.id);
+          });
+        }
+      }
     }
     if (_erased.isNotEmpty) {
       _commitRemoved(List.of(_erased));
@@ -409,6 +470,8 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
   void _onPointerCancel(PointerCancelEvent e) {
     _panning = false;
     _active = null;
+    _laserActive = false;
+    _laserTrail = [];
     if (_drag != _SelectDrag.none &&
         _drag != _SelectDrag.marquee &&
         _dragMoved) {
@@ -486,6 +549,7 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
         seed: s.seed,
         angle: angle ?? s.angle,
         text: s.text,
+        locked: s.locked,
       );
 
   StrokeItem _translated(StrokeItem s, Offset delta) =>
@@ -618,6 +682,7 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
       seed: s.seed,
       angle: s.angle,
       text: s.text,
+      locked: s.locked,
     );
   }
 
@@ -693,10 +758,12 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
   }) {
     final isShape = s.type != StrokeType.pen &&
         s.type != StrokeType.marker &&
-        s.type != StrokeType.text;
+        s.type != StrokeType.text &&
+        s.type != StrokeType.sticky;
     final closedShape = s.type == StrokeType.rectangle ||
         s.type == StrokeType.ellipse ||
-        s.type == StrokeType.diamond;
+        s.type == StrokeType.diamond ||
+        s.type == StrokeType.sticky;
     // For text labels [width]/[fontSize] is the font size.
     final newWidth = s.type == StrokeType.text
         ? (fontSize ?? s.width)
@@ -715,6 +782,7 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
       seed: s.seed,
       angle: s.angle,
       text: s.text,
+      locked: s.locked,
     );
     if (updated.colorValue == s.colorValue &&
         updated.width == s.width &&
@@ -736,7 +804,7 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
   void _eraseAt(Offset world) {
     final radius = 10 / _scale;
     final hits = widget.note.strokes
-        .where((s) => strokeHitTest(s, world, radius))
+        .where((s) => !s.locked && strokeHitTest(s, world, radius))
         .toList();
     if (hits.isEmpty) return;
     final list = List<StrokeItem>.of(widget.note.strokes)
@@ -843,7 +911,7 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
   }
 
   void _deleteSelected() {
-    final victims = _selectedStrokes;
+    final victims = _selectedStrokes.where((s) => !s.locked).toList();
     if (victims.isEmpty) return;
     _selectedIds = {};
     _commitRemoved(victims);
@@ -878,15 +946,204 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
   }
 
   void _nudge(int dx, int dy) {
-    if (_selectedIds.isEmpty) return;
+    final movable = _selectedStrokes.where((s) => !s.locked).toList();
+    if (movable.isEmpty) return;
+    final ids = {for (final s in movable) s.id};
     final step = _shiftHeld ? 10.0 : 1.0;
     final delta = Offset(dx * step, dy * step);
     final before = List<StrokeItem>.of(widget.note.strokes);
     _pushOp(before, [
       for (final s in before)
-        _selectedIds.contains(s.id) ? _translated(s, delta) : s,
+        ids.contains(s.id) ? _translated(s, delta) : s,
     ]);
     setState(() {});
+  }
+
+  void _toggleLockSelected() {
+    final sel = _selectedStrokes;
+    if (sel.isEmpty) return;
+    final makeLocked = sel.any((s) => !s.locked);
+    final before = List<StrokeItem>.of(widget.note.strokes);
+    final after = [
+      for (final s in before)
+        _selectedIds.contains(s.id) ? s.copyWith(locked: makeLocked) : s,
+    ];
+    _pushOp(before, after);
+    setState(() {});
+  }
+
+  Future<void> _editStickyDialog(String id) async {
+    final existing = _byId(id);
+    if (existing == null) return;
+    final ctrl = TextEditingController(text: existing.text ?? '');
+    final result = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Sticky note'),
+        content: TextField(
+          controller: ctrl,
+          maxLines: 5,
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'Write something…',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(ctrl.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+    ctrl.dispose();
+    if (result == null) return;
+    final current = _byId(id);
+    if (current == null) return;
+    _commitReplace(current, current.copyWith(text: () => result));
+    setState(() {});
+  }
+
+  void _showLayersDialog() {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Layers'),
+        contentPadding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+        content: SizedBox(
+          width: 320,
+          height: 320,
+          child: StatefulBuilder(
+            builder: (context, setDialog) {
+              final strokes = widget.note.strokes;
+              if (strokes.isEmpty) {
+                return const Center(child: Text('No shapes yet'));
+              }
+              return ListView.builder(
+                itemCount: strokes.length,
+                itemBuilder: (context, i) {
+                  // Top of the list = front.
+                  final s = strokes[strokes.length - 1 - i];
+                      return ListTile(
+                        dense: true,
+                        leading: Icon(
+                          switch (s.type) {
+                            StrokeType.text => Icons.text_fields,
+                            StrokeType.sticky =>
+                              Icons.sticky_note_2_outlined,
+                            StrokeType.pen || StrokeType.marker => Icons.edit,
+                            StrokeType.line => Icons.horizontal_rule,
+                            StrokeType.rectangle => Icons.crop_square,
+                            StrokeType.ellipse => Icons.circle_outlined,
+                            StrokeType.diamond => Icons.diamond_outlined,
+                            StrokeType.arrow => Icons.north_east,
+                          },
+                          size: 18,
+                        ),
+                        title: Text(
+                          s.type == StrokeType.text ||
+                                  s.type == StrokeType.sticky
+                              ? ((s.text ?? '').isEmpty
+                                  ? s.type.name
+                                  : s.text!.split('\n').first)
+                              : '${s.type.name} ${s.id.length >= 4 ? s.id.substring(0, 4) : s.id}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontSize: 13),
+                        ),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              tooltip: s.locked ? 'Unlock' : 'Lock',
+                              icon: Icon(
+                                s.locked
+                                    ? Icons.lock
+                                    : Icons.lock_open,
+                                size: 18,
+                              ),
+                              onPressed: () {
+                                final before =
+                                    List<StrokeItem>.of(widget.note.strokes);
+                                final after = [
+                                  for (final e in before)
+                                    e.id == s.id
+                                        ? e.copyWith(locked: !e.locked)
+                                        : e,
+                                ];
+                                _pushOp(before, after);
+                                setDialog(() {});
+                                setState(() {});
+                              },
+                            ),
+                            IconButton(
+                              tooltip: 'Bring forward',
+                              icon: const Icon(Icons.arrow_upward, size: 18),
+                              onPressed: () {
+                                final before =
+                                    List<StrokeItem>.of(widget.note.strokes);
+                                final idx = before
+                                    .indexWhere((e) => e.id == s.id);
+                                if (idx < 0 ||
+                                    idx >= before.length - 1) {
+                                  return;
+                                }
+                                final after =
+                                    List<StrokeItem>.of(before);
+                                final tmp = after[idx];
+                                after[idx] = after[idx + 1];
+                                after[idx + 1] = tmp;
+                                _pushOp(before, after);
+                                setDialog(() {});
+                                setState(() {});
+                              },
+                            ),
+                            IconButton(
+                              tooltip: 'Send backward',
+                              icon:
+                                  const Icon(Icons.arrow_downward, size: 18),
+                              onPressed: () {
+                                final before =
+                                    List<StrokeItem>.of(widget.note.strokes);
+                                final idx = before
+                                    .indexWhere((e) => e.id == s.id);
+                                if (idx <= 0) return;
+                                final after =
+                                    List<StrokeItem>.of(before);
+                                final tmp = after[idx];
+                                after[idx] = after[idx - 1];
+                                after[idx - 1] = tmp;
+                                _pushOp(before, after);
+                                setDialog(() {});
+                                setState(() {});
+                              },
+                            ),
+                          ],
+                        ),
+                        onTap: () {
+                          _selectedIds = {s.id};
+                          setState(() {});
+                          Navigator.of(context).pop();
+                        },
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
   }
 
   // ---- in-place text labels -----------------------------------------------
@@ -1017,6 +1274,17 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
             height: 40,
             child: Text('Edit label'),
           ),
+        if (hit.type == StrokeType.sticky)
+          const PopupMenuItem(
+            value: 'edit-sticky',
+            height: 40,
+            child: Text('Edit sticky'),
+          ),
+        PopupMenuItem(
+          value: hit.locked ? 'unlock' : 'lock',
+          height: 40,
+          child: Text(hit.locked ? 'Unlock' : 'Lock'),
+        ),
         const PopupMenuItem(
           value: 'duplicate',
           height: 40,
@@ -1042,6 +1310,11 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
       switch (value) {
         case 'edit':
           _startLabelEdit(existing: hit);
+        case 'edit-sticky':
+          _editStickyDialog(hit.id);
+        case 'lock':
+        case 'unlock':
+          _toggleLockSelected();
         case 'duplicate':
           _duplicateSelected();
         case 'front':
@@ -1106,6 +1379,9 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
                       final hit = _topStrokeAt(_toWorld(d.localPosition));
                       if (hit != null && hit.type == StrokeType.text) {
                         _startLabelEdit(existing: hit);
+                      } else if (hit != null &&
+                          hit.type == StrokeType.sticky) {
+                        _editStickyDialog(hit.id);
                       } else if (hit == null) {
                         // Excalidraw-style: double-click empty space to add text.
                         _startLabelEdit(at: _toWorld(d.localPosition));
@@ -1187,6 +1463,64 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
                     dark: dark,
                   ),
                 ),
+                Positioned(
+                  right: 12,
+                  top: 12,
+                  child: Material(
+                    elevation: 4,
+                    borderRadius: BorderRadius.circular(12),
+                    color: dark ? const Color(0xFF2C2C2C) : Colors.white,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 4, vertical: 2),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            tooltip: _snapToGrid
+                                ? 'Snap to grid: on'
+                                : 'Snap to grid: off',
+                            isSelected: _snapToGrid,
+                            icon: const Icon(Icons.grid_4x4, size: 20),
+                            onPressed: () => setState(
+                                () => _snapToGrid = !_snapToGrid),
+                          ),
+                          IconButton(
+                            tooltip: 'Layers',
+                            icon: const Icon(Icons.layers_outlined, size: 20),
+                            onPressed: _showLayersDialog,
+                          ),
+                          IconButton(
+                            tooltip: 'Lock / unlock selection',
+                            icon: Icon(
+                              selectedStrokes.isNotEmpty &&
+                                      selectedStrokes
+                                          .every((s) => s.locked)
+                                  ? Icons.lock
+                                  : Icons.lock_open,
+                              size: 20,
+                            ),
+                            onPressed: selectedStrokes.isEmpty
+                                ? null
+                                : _toggleLockSelected,
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+                if (_laserTrail.length > 1)
+                  Positioned.fill(
+                    child: IgnorePointer(
+                      child: CustomPaint(
+                        painter: _LaserPainter(
+                          points: _laserTrail,
+                          offset: _offset,
+                          scale: _scale,
+                        ),
+                      ),
+                    ),
+                  ),
                 if (_labelField != null)
                   Positioned(
                     left: _offset.dx + _labelWorld.dx * _scale,
@@ -1308,8 +1642,50 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
 
   SystemMouseCursor _cursorFor(CanvasTool t) => switch (t) {
         CanvasTool.pan => SystemMouseCursors.move,
-        CanvasTool.text => SystemMouseCursors.text,
+        CanvasTool.text || CanvasTool.sticky => SystemMouseCursors.text,
         CanvasTool.select || CanvasTool.eraser => SystemMouseCursors.basic,
+        CanvasTool.laser => SystemMouseCursors.precise,
         _ => SystemMouseCursors.precise,
       };
+}
+
+/// Temporary laser-pointer trail (world coords, never saved).
+class _LaserPainter extends CustomPainter {
+  _LaserPainter({
+    required this.points,
+    required this.offset,
+    required this.scale,
+  });
+
+  final List<Offset> points;
+  final Offset offset;
+  final double scale;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    if (points.length < 2) return;
+    canvas.save();
+    canvas.translate(offset.dx, offset.dy);
+    canvas.scale(scale);
+    final path = Path()..moveTo(points.first.dx, points.first.dy);
+    for (var i = 1; i < points.length; i++) {
+      path.lineTo(points[i].dx, points[i].dy);
+    }
+    canvas.drawPath(
+      path,
+      Paint()
+        ..color = const Color(0xFFE11D48)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 4 / scale * 2
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round,
+    );
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant _LaserPainter old) =>
+      old.points != points ||
+      old.offset != offset ||
+      old.scale != scale;
 }

@@ -8,7 +8,10 @@ class FormatFlags {
   static const int strike = 8;
   static const int h1 = 16;
   static const int h2 = 32;
-  static const int all = bold | italic | underline | strike | h1 | h2;
+  static const int code = 64;
+  static const int quote = 128;
+  static const int all =
+      bold | italic | underline | strike | h1 | h2 | code | quote;
 }
 
 /// A half-open range [start, end) of characters sharing the same formatting.

@@ -20,7 +20,10 @@ class NotesApp extends StatelessWidget {
     return ListenableBuilder(
       listenable: controller,
       builder: (context, _) {
-        const seed = Color(0xFF0078D4); // Windows accent blue
+        final seed = controller.accent;
+        final density = controller.compact
+            ? VisualDensity.compact
+            : VisualDensity.standard;
         return MaterialApp(
           title: 'Notes',
           debugShowCheckedModeBanner: false,
@@ -28,12 +31,14 @@ class NotesApp extends StatelessWidget {
           theme: ThemeData(
             useMaterial3: true,
             fontFamily: 'Segoe UI',
+            visualDensity: density,
             colorScheme: ColorScheme.fromSeed(
                 seedColor: seed, brightness: Brightness.light),
           ),
           darkTheme: ThemeData(
             useMaterial3: true,
             fontFamily: 'Segoe UI',
+            visualDensity: density,
             colorScheme: ColorScheme.fromSeed(
                 seedColor: seed, brightness: Brightness.dark),
           ),

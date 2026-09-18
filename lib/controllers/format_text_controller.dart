@@ -467,8 +467,18 @@ class FormatTextController extends TextEditingController {
     if (flags & FormatFlags.bold != 0) {
       s = s.copyWith(fontWeight: FontWeight.w700);
     }
-    if (flags & FormatFlags.italic != 0) {
+    if (flags & FormatFlags.italic != 0 ||
+        flags & FormatFlags.quote != 0) {
       s = s.copyWith(fontStyle: FontStyle.italic);
+    }
+    if (flags & FormatFlags.code != 0) {
+      s = s.copyWith(
+        fontFamily: 'Consolas',
+        backgroundColor: const Color(0x33000000),
+      );
+    }
+    if (flags & FormatFlags.quote != 0) {
+      s = s.copyWith(color: const Color(0xFF6B7280));
     }
     final decorations = <TextDecoration>[];
     if (flags & FormatFlags.underline != 0 || composing) {
