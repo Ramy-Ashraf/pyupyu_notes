@@ -156,8 +156,12 @@ class DiagramToolbar extends StatelessWidget {
     required this.onFillStyleSelected,
     required this.dashStyle,
     required this.onDashStyleSelected,
+    required this.rough,
+    required this.onRoughSelected,
     required this.labelSize,
     required this.onLabelSizeSelected,
+    required this.fontFamily,
+    required this.onFontFamilySelected,
     required this.showGrid,
     required this.onToggleGrid,
     required this.onZoomIn,
@@ -186,8 +190,12 @@ class DiagramToolbar extends StatelessWidget {
   final ValueChanged<int> onFillStyleSelected;
   final int dashStyle;
   final ValueChanged<int> onDashStyleSelected;
+  final bool rough;
+  final ValueChanged<bool> onRoughSelected;
   final double labelSize;
   final ValueChanged<double> onLabelSizeSelected;
+  final String fontFamily;
+  final ValueChanged<String> onFontFamilySelected;
   final bool showGrid;
   final VoidCallback onToggleGrid;
   final VoidCallback onZoomIn;
@@ -378,6 +386,82 @@ class DiagramToolbar extends StatelessWidget {
                   child: Icon(_dashIcon(dashStyle), size: 22, color: fg),
                 ),
               ),
+              PopupMenuButton<bool>(
+                tooltip: rough
+                    ? 'Shape style: Excalidraw (sketchy)'
+                    : 'Shape style: Regular (sharp)',
+                initialValue: rough,
+                onSelected: onRoughSelected,
+                itemBuilder: (_) => const [
+                  PopupMenuItem(
+                    value: false,
+                    height: 40,
+                    child: Row(children: [
+                      Icon(Icons.crop_square, size: 18),
+                      SizedBox(width: 10),
+                      Text('Regular'),
+                    ]),
+                  ),
+                  PopupMenuItem(
+                    value: true,
+                    height: 40,
+                    child: Row(children: [
+                      Icon(Icons.gesture, size: 18),
+                      SizedBox(width: 10),
+                      Text('Excalidraw'),
+                    ]),
+                  ),
+                ],
+                child: Padding(
+                  padding: const EdgeInsets.all(10),
+                  child: Icon(
+                    rough ? Icons.gesture : Icons.crop_square,
+                    size: 22,
+                    color: fg,
+                  ),
+                ),
+              ),
+              PopupMenuButton<String>(
+                tooltip: 'Text font ($fontFamily)',
+                initialValue: fontFamily,
+                onSelected: onFontFamilySelected,
+                itemBuilder: (_) => [
+                  for (var i = 0; i < canvasFontFamilies.length; i++)
+                    PopupMenuItem<String>(
+                      value: canvasFontFamilies[i],
+                      height: 40,
+                      child: Row(
+                        children: [
+                          Icon(Icons.font_download_outlined,
+                              size: 16,
+                              color: fontFamily == canvasFontFamilies[i]
+                                  ? accent
+                                  : fg),
+                          const SizedBox(width: 10),
+                          Text(
+                            canvasFontLabels[i],
+                            style: TextStyle(
+                                fontFamily: canvasFontFamilies[i]),
+                          ),
+                        ],
+                      ),
+                    ),
+                ],
+                child: Padding(
+                  padding: const EdgeInsets.all(10),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.text_format, size: 20, color: fg),
+                      const SizedBox(width: 4),
+                      Text(
+                        _fontShortLabel(fontFamily),
+                        style: TextStyle(fontSize: 11, color: fg),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
               PopupMenuButton<double>(
                 tooltip: 'Text size',
                 initialValue: labelSize,
@@ -485,6 +569,12 @@ class DiagramToolbar extends StatelessWidget {
         DashStyles.dotted => Icons.scatter_plot,
         _ => Icons.remove,
       };
+
+  static String _fontShortLabel(String family) {
+    final i = canvasFontFamilies.indexOf(family);
+    if (i < 0) return family.length > 8 ? family.substring(0, 8) : family;
+    return canvasFontLabels[i];
+  }
 
   Widget _swatchGrid(BuildContext popupContext, Color fg) {
     return Padding(

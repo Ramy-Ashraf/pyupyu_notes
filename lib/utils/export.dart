@@ -232,8 +232,9 @@ String buildDiagramSvg(Note note,
               'height="${r.height}" fill="$fill" stroke="$color" '
               'stroke-width="$sw"$dash$fillOp/>');
           if ((s.text ?? '').isNotEmpty) {
+            final fam = _escapeHtml(s.effectiveFontFamily);
             buf.write('<text x="${r.left + 8}" y="${r.top + 20}" '
-                'font-size="14" fill="$color">'
+                'font-size="14" fill="$color" font-family="$fam">'
                 '${_escapeHtml(s.text!).replaceAll('\n', '&#10;')}</text>');
           }
         }
@@ -259,9 +260,10 @@ String buildDiagramSvg(Note note,
         if ((s.text ?? '').isNotEmpty) {
           final p = s.points.first;
           final esc = _escapeHtml(s.text!);
+          final fam = _escapeHtml(s.effectiveFontFamily);
           buf.write('<text x="${p.dx}" y="${p.dy + s.width}" '
               'font-size="${s.width}" fill="$color" '
-              'font-family="Segoe Print, cursive">$esc</text>');
+              'font-family="$fam, cursive">$esc</text>');
         }
     }
   }

@@ -9,22 +9,80 @@ import '../../models/stroke_item.dart';
 const double _roughness = 1.2;
 
 /// Lays out a text-label stroke at its stored font size ([StrokeItem.width]).
-/// Labels render in a handwritten font (Windows' Segoe Print) and support
-/// multi-line content — lines only break where the text contains `\n`.
+/// Labels default to a handwritten font and support multi-line content —
+/// lines only break where the text contains `\n`. The font is stored per
+/// stroke so old notes keep rendering as before. Results are cached: tight
+/// bounds, hit tests, painting and thumbnails all measure the same labels
+/// on every frame and pointer event, and re-layout dwarfs everything else.
 TextPainter layoutTextLabel(StrokeItem s, {Color? color}) {
-  final tp = TextPainter(
+  return _cachedTextPainter(
+    cacheKey: '${s.id}|label',
+    text: s.text ?? '',
+    size: s.width.clamp(8.0, 128.0).toDouble(),
+    font: s.effectiveFontFamily,
+    height: 1.25,
+    color: color ?? const Color(0xFF000000),
+    maxWidth: double.infinity,
+  );
+}
+
+/// One cached text run: the full key tuple plus the laid-out painter.
+class _CachedText {
+  _CachedText(this.text, this.size, this.font, this.height, this.colorValue,
+      this.maxWidth, this.painter);
+  final String text;
+  final double size;
+  final String font;
+  final double height;
+  final int colorValue;
+  final double maxWidth;
+  final TextPainter painter;
+}
+
+/// Laid-out label/sticky runs by stroke id. Bounded (oldest ids age out);
+/// entries are replaced whenever any key field changes. Shared painters
+/// are never mutated by callers — they are only measured or painted.
+final Map<String, _CachedText> _textCache = {};
+const int _textCacheMax = 256;
+
+TextPainter _cachedTextPainter({
+  required String cacheKey,
+  required String text,
+  required double size,
+  required String font,
+  required double height,
+  required Color color,
+  required double maxWidth,
+}) {
+  final colorValue = color.toARGB32();
+  final existing = _textCache[cacheKey];
+  if (existing != null &&
+      existing.text == text &&
+      existing.size == size &&
+      existing.font == font &&
+      existing.height == height &&
+      existing.colorValue == colorValue &&
+      existing.maxWidth == maxWidth) {
+    return existing.painter;
+  }
+  if (_textCache.length >= _textCacheMax) {
+    _textCache.remove(_textCache.keys.first);
+  }
+  final painter = TextPainter(
     text: TextSpan(
-      text: s.text ?? '',
+      text: text,
       style: TextStyle(
-        color: color ?? const Color(0xFF000000),
-        fontSize: s.width.clamp(8.0, 128.0).toDouble(),
-        fontFamily: 'Segoe Print',
-        height: 1.25,
+        color: color,
+        fontSize: size,
+        fontFamily: font,
+        height: height,
       ),
     ),
     textDirection: TextDirection.ltr,
-  )..layout();
-  return tp;
+  )..layout(maxWidth: maxWidth);
+  _textCache[cacheKey] =
+      _CachedText(text, size, font, height, colorValue, maxWidth, painter);
+  return painter;
 }
 
 /// Bounding box of a stroke's unrotated geometry, used as the local frame
@@ -63,8 +121,32 @@ Rect strokeTightBounds(StrokeItem s) {
 }
 
 /// Axis-aligned bounding box in world space, accounting for [StrokeItem.angle].
+/// Inflated past the ink by half the stroke width so zoom-to-fit and export
+/// include the full outline.
 Rect strokeBounds(StrokeItem s) {
   final r = strokeLocalBounds(s);
+  if (s.angle == 0) return r;
+  final c = r.center;
+  final cos = math.cos(s.angle);
+  final sin = math.sin(s.angle);
+  Offset rot(Offset p) {
+    final dx = p.dx - c.dx;
+    final dy = p.dy - c.dy;
+    return Offset(c.dx + dx * cos - dy * sin, c.dy + dx * sin + dy * cos);
+  }
+
+  var out = Rect.fromPoints(rot(r.topLeft), rot(r.topRight));
+  out = out.expandToInclude(
+      Rect.fromPoints(rot(r.bottomRight), rot(r.bottomLeft)));
+  return out;
+}
+
+/// Tight axis-aligned bounding box in world space: hugs the geometry
+/// without the stroke-width padding. Drives the selection frame and the
+/// Excalidraw-style full-enclosure marquee test.
+Rect tightStrokeBounds(StrokeItem s) {
+  final r = strokeTightBounds(s);
+  if (r == Rect.zero) return r;
   if (s.angle == 0) return r;
   final c = r.center;
   final cos = math.cos(s.angle);
@@ -126,10 +208,11 @@ SelectionBox tightSelectionBoxFor(StrokeItem s) =>
     SelectionBox(strokeTightBounds(s), s.angle);
 
 /// Draws one stroke onto [canvas]. Used by the main canvas painter and the
-/// sidebar thumbnails. Shapes render in a sketchy Excalidraw-like style:
-/// two slightly different wobbly outlines per stroke, seeded by the stroke
-/// so the look is stable across frames. Strokes with an [StrokeItem.angle]
-/// are rotated about their bounds center.
+/// sidebar thumbnails. Shapes render either sketchy (Excalidraw-like, two
+/// wobbly passes seeded by the stroke) or clean/regular when
+/// [StrokeItem.rough] is false. Strokes with an [StrokeItem.angle] are
+/// rotated about their tight bounds center so rendering agrees with the
+/// selection frame.
 void paintStroke(
   Canvas canvas,
   StrokeItem s, {
@@ -137,7 +220,7 @@ void paintStroke(
   double widthScale = 1,
 }) {
   if (s.angle != 0) {
-    final c = strokeLocalBounds(s).center;
+    final c = strokeTightBounds(s).center;
     canvas.save();
     canvas.translate(c.dx, c.dy);
     canvas.rotate(s.angle);
@@ -208,27 +291,34 @@ void _paintSticky(Canvas canvas, StrokeItem s, Paint paint) {
       foldPath, Paint()..color = s.color.withValues(alpha: 0.45));
   final text = s.text;
   if (text != null && text.isNotEmpty) {
-    final tp = TextPainter(
-      text: TextSpan(
-        text: text,
-        style: TextStyle(
-          color: paint.color,
-          fontSize: 14,
-          height: 1.3,
-        ),
-      ),
-      textDirection: TextDirection.ltr,
-    )..layout(maxWidth: math.max(rect.width - 16, 20));
+    // Cached: sticky width only changes on resize, text on edit.
+    final tp = _cachedTextPainter(
+      cacheKey: '${s.id}|sticky',
+      text: text,
+      size: 14,
+      font: s.effectiveFontFamily,
+      height: 1.3,
+      color: paint.color,
+      maxWidth: math.max(rect.width - 16, 20),
+    );
     tp.paint(canvas, rect.topLeft + const Offset(8, 8));
   }
 }
 
 // ---- rough shapes ---------------------------------------------------------
 
+/// Paints line/rectangle/ellipse/diamond/arrow either sketchy (two wobbly
+/// passes, Excalidraw-style) or clean/regular (single crisp pass) depending
+/// on [StrokeItem.rough]. Fills are identical in both modes.
 void _paintRoughShape(Canvas canvas, StrokeItem s, Paint paint) {
   final a = s.points[0];
   final b = s.points[1];
   if (s.filled) _paintFill(canvas, s, paint);
+
+  if (!s.rough) {
+    _paintCleanShape(canvas, s, paint);
+    return;
+  }
 
   switch (s.type) {
     case StrokeType.line:
@@ -297,6 +387,67 @@ void _roughSegment(
       s,
     );
   }
+}
+
+/// Clean/regular rendering for [StrokeItem.rough] == false: single crisp
+/// pass with no jitter. Dash styles are still honored via [_drawPolyline].
+void _paintCleanShape(Canvas canvas, StrokeItem s, Paint paint) {
+  final a = s.points[0];
+  final b = s.points[1];
+  switch (s.type) {
+    case StrokeType.line:
+      _drawPolyline(canvas, [a, b], paint, s);
+    case StrokeType.arrow:
+      _drawPolyline(canvas, [a, b], paint, s);
+      final dx = b.dx - a.dx;
+      final dy = b.dy - a.dy;
+      final len = math.sqrt(dx * dx + dy * dy);
+      if (len < 1) return;
+      final head = math.max(12.0, paint.strokeWidth * 3);
+      final angle = math.atan2(dy, dx);
+      Offset tip(double spread) => Offset(
+            b.dx - head * math.cos(angle - spread),
+            b.dy - head * math.sin(angle - spread),
+          );
+      _drawPolyline(canvas, [b, tip(0.42)], paint, s);
+      _drawPolyline(canvas, [b, tip(-0.42)], paint, s);
+    case StrokeType.rectangle:
+      _drawPolyline(
+        canvas,
+        [a, Offset(b.dx, a.dy), b, Offset(a.dx, b.dy), a],
+        paint,
+        s,
+      );
+    case StrokeType.diamond:
+      final c = Offset((a.dx + b.dx) / 2, (a.dy + b.dy) / 2);
+      final poly = [
+        Offset(c.dx, a.dy),
+        Offset(b.dx, c.dy),
+        Offset(c.dx, b.dy),
+        Offset(a.dx, c.dy),
+        Offset(c.dx, a.dy),
+      ];
+      _drawPolyline(canvas, poly, paint, s);
+    case StrokeType.ellipse:
+      _drawPolyline(canvas, _cleanEllipsePts(Rect.fromPoints(a, b)), paint, s);
+    default:
+      break;
+  }
+}
+
+/// Evenly spaced points around [r] with no jitter (regular ellipse).
+List<Offset> _cleanEllipsePts(Rect r) {
+  const n = 48;
+  final c = r.center;
+  final rx = r.width / 2;
+  final ry = r.height / 2;
+  return [
+    for (var i = 0; i <= n; i++)
+      Offset(
+        c.dx + rx * math.cos(i * 2 * math.pi / n),
+        c.dy + ry * math.sin(i * 2 * math.pi / n),
+      ),
+  ];
 }
 
 void _roughPolygon(
@@ -564,10 +715,14 @@ void _paintFreehand(Canvas canvas, StrokeItem s, Paint paint) {
 
 /// True when [p] (with eraser [radius]) touches the rendered stroke.
 /// Rotation-aware: [p] is mapped into the stroke's local frame first.
+/// Text uses the tight label bounds so the cursor does not select labels
+/// from the padded halo around them.
 bool strokeHitTest(StrokeItem s, Offset p, double radius) {
   final pad = radius + s.width / 2;
   if (s.angle != 0) {
-    final c = strokeLocalBounds(s).center;
+    // Match the selection frame: rotate about the tight bounds center so
+    // hit-testing agrees with the painted outline/handles.
+    final c = strokeTightBounds(s).center;
     final cos = math.cos(-s.angle);
     final sin = math.sin(-s.angle);
     final dx = p.dx - c.dx;
@@ -577,7 +732,7 @@ bool strokeHitTest(StrokeItem s, Offset p, double radius) {
   switch (s.type) {
     case StrokeType.text:
       if (s.text?.isEmpty ?? true) return false;
-      return strokeLocalBounds(s).contains(p);
+      return strokeTightBounds(s).inflate(radius * 0.5).contains(p);
     case StrokeType.pen:
     case StrokeType.marker:
     case StrokeType.line:
@@ -630,6 +785,64 @@ bool strokeHitTest(StrokeItem s, Offset p, double radius) {
         if ((q - p).distance <= pad) return true;
       }
       return false;
+  }
+}
+
+/// Excalidraw-style selection hit test: closed shapes (hollow or filled),
+/// stickies and text labels are solid — clicking anywhere inside their
+/// (rotated) area selects them. Freehand ink, lines and arrows need a real
+/// touch within [slop] of the stroke. Rotation-aware, using the same frame
+/// as [strokeHitTest]. The eraser keeps using [strokeHitTest] so hollow
+/// interiors cannot be erased by clicking through them.
+bool strokeSelectHitTest(StrokeItem s, Offset p, double slop) {
+  switch (s.type) {
+    case StrokeType.pen:
+    case StrokeType.marker:
+    case StrokeType.line:
+    case StrokeType.arrow:
+      return strokeHitTest(s, p, slop);
+    case StrokeType.text:
+    case StrokeType.rectangle:
+    case StrokeType.sticky:
+    case StrokeType.diamond:
+    case StrokeType.ellipse:
+      break;
+  }
+  if (s.angle != 0) {
+    final c = strokeTightBounds(s).center;
+    final cos = math.cos(-s.angle);
+    final sin = math.sin(-s.angle);
+    final dx = p.dx - c.dx;
+    final dy = p.dy - c.dy;
+    p = Offset(c.dx + dx * cos - dy * sin, c.dy + dx * sin + dy * cos);
+  }
+  switch (s.type) {
+    case StrokeType.text:
+      if (s.text?.isEmpty ?? true) return false;
+      return strokeTightBounds(s).inflate(slop * 0.5).contains(p);
+    case StrokeType.rectangle:
+    case StrokeType.sticky:
+      if (s.points.length < 2) return false;
+      return Rect.fromPoints(s.points[0], s.points[1]).contains(p);
+    case StrokeType.diamond:
+      if (s.points.length < 2) return false;
+      return _pointInPolygon(_diamondPoly(s.points[0], s.points[1]), p);
+    case StrokeType.ellipse:
+      if (s.points.length < 2) return false;
+      final r = Rect.fromPoints(s.points[0], s.points[1]);
+      final rx = r.width / 2;
+      final ry = r.height / 2;
+      if (rx <= 0 || ry <= 0) {
+        return (r.center - p).distance <= slop + s.width / 2;
+      }
+      final nx = (p.dx - r.center.dx) / rx;
+      final ny = (p.dy - r.center.dy) / ry;
+      return nx * nx + ny * ny <= 1;
+    case StrokeType.pen:
+    case StrokeType.marker:
+    case StrokeType.line:
+    case StrokeType.arrow:
+      return false; // handled above; kept for exhaustiveness.
   }
 }
 

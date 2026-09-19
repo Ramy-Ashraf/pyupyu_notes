@@ -27,10 +27,34 @@ class DashStyles {
   static const int dotted = 2;
 }
 
+/// Default font for canvas text labels (kept for old notes).
+const String kDefaultCanvasFont = 'Segoe Print';
+
+/// Font choices offered for canvas text labels / stickies.
+const List<String> canvasFontFamilies = [
+  'Segoe Print',
+  'Arial',
+  'Georgia',
+  'Courier New',
+  'Times New Roman',
+];
+
+/// Human-readable labels aligned with [canvasFontFamilies].
+const List<String> canvasFontLabels = [
+  'Handwritten',
+  'Sans',
+  'Serif',
+  'Mono',
+  'Times',
+];
+
 /// A single drawn item on the diagram canvas, stored in world coordinates.
 /// For [StrokeType.text] the first point is the top-left anchor and [width]
 /// holds the font size. For [StrokeType.sticky] points are [topLeft,
 /// bottomRight] like a rectangle and [text] is the sticky content.
+/// [rough] selects the Excalidraw-style wobbly outline (true) or a clean
+/// regular shape (false). [fontFamily] selects the text font for labels
+/// and stickies (null falls back to [kDefaultCanvasFont] for old notes).
 class StrokeItem {
   StrokeItem({
     required this.id,
@@ -45,6 +69,8 @@ class StrokeItem {
     this.angle = 0,
     this.text,
     this.locked = false,
+    this.rough = true,
+    this.fontFamily,
   });
 
   final String id;
@@ -79,7 +105,16 @@ class StrokeItem {
   /// Locked strokes cannot be moved, resized or erased until unlocked.
   final bool locked;
 
+  /// True = Excalidraw-style sketchy outline, false = clean regular shape.
+  final bool rough;
+
+  /// Text font for labels/stickies; null = legacy default.
+  final String? fontFamily;
+
   Color get color => Color(colorValue);
+
+  /// Effective font, falling back to the legacy handwritten look.
+  String get effectiveFontFamily => fontFamily ?? kDefaultCanvasFont;
 
   StrokeItem copyWith({
     String? id,
@@ -94,6 +129,8 @@ class StrokeItem {
     double? angle,
     String? Function()? text,
     bool? locked,
+    bool? rough,
+    String? Function()? fontFamily,
   }) {
     return StrokeItem(
       id: id ?? this.id,
@@ -108,6 +145,8 @@ class StrokeItem {
       angle: angle ?? this.angle,
       text: text != null ? text() : this.text,
       locked: locked ?? this.locked,
+      rough: rough ?? this.rough,
+      fontFamily: fontFamily != null ? fontFamily() : this.fontFamily,
     );
   }
 
@@ -126,6 +165,8 @@ class StrokeItem {
         'angle': angle,
         if (text != null) 'text': text,
         if (locked) 'locked': true,
+        if (!rough) 'rough': false,
+        if (fontFamily != null) 'fontFamily': fontFamily,
       };
 
   factory StrokeItem.fromJson(Map<String, dynamic> json) {
@@ -155,6 +196,9 @@ class StrokeItem {
       angle: (json['angle'] as num?)?.toDouble() ?? 0,
       text: json['text'] as String?,
       locked: json['locked'] as bool? ?? false,
+      // Old notes predate the style toggle and were always sketchy.
+      rough: (json['rough'] as bool?) ?? true,
+      fontFamily: json['fontFamily'] as String?,
     );
   }
 }

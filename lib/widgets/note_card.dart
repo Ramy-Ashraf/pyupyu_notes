@@ -187,10 +187,14 @@ class NoteCard extends StatelessWidget {
                     child: SizedBox(
                       width: 44,
                       height: 34,
-                      child: CustomPaint(
-                        painter: StrokeThumbPainter(
-                          strokes: note.strokes,
-                          color: textColor.withValues(alpha: 0.85),
+                      // Isolated so list rebuilds don't repaint thumbnails
+                      // whose strokes didn't change (see shouldRepaint).
+                      child: RepaintBoundary(
+                        child: CustomPaint(
+                          painter: StrokeThumbPainter(
+                            strokes: note.strokes,
+                            color: textColor.withValues(alpha: 0.85),
+                          ),
                         ),
                       ),
                     ),

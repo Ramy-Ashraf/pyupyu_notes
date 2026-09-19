@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/foundation.dart' show listEquals;
 import 'package:flutter/material.dart';
 
 import '../../models/stroke_item.dart';
@@ -54,7 +55,10 @@ class DiagramPainter extends CustomPainter {
     canvas.scale(scale);
 
     if (showGrid && scale > 0.3) {
-      const spacing = 32.0;
+      // Adaptive spacing keeps the dot count bounded when zoomed out: at
+      // 0.3x a 32px grid would issue tens of thousands of drawCircle
+      // calls per frame. Normal zoom levels render exactly as before.
+      final spacing = scale >= 1 ? 32.0 : (scale >= 0.5 ? 64.0 : 128.0);
       final tlX = -offset.dx / scale;
       final tlY = -offset.dy / scale;
       final brX = (size.width - offset.dx) / scale;
@@ -211,6 +215,9 @@ class DiagramPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant DiagramPainter oldDelegate) {
+    // [selected] is rebuilt as a fresh list every canvas build, so
+    // identity comparison would repaint on every setState (e.g. each
+    // mouse-hover event). Contents are stable StrokeItem references.
     return oldDelegate.strokes != strokes ||
         oldDelegate.active != active ||
         oldDelegate.activePointCount != activePointCount ||
@@ -220,7 +227,7 @@ class DiagramPainter extends CustomPainter {
         oldDelegate.background != background ||
         oldDelegate.gridColor != gridColor ||
         oldDelegate.showGrid != showGrid ||
-        oldDelegate.selected != selected ||
+        !listEquals(oldDelegate.selected, selected) ||
         oldDelegate.showHandles != showHandles ||
         oldDelegate.marquee != marquee ||
         oldDelegate.selectionColor != selectionColor;

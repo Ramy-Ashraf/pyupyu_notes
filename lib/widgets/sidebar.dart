@@ -51,6 +51,10 @@ class _SidebarState extends State<Sidebar> {
     final scheme = Theme.of(context).colorScheme;
     final dark = Theme.of(context).brightness == Brightness.dark;
     final notes = controller.notes;
+    // Computed once: tagCounts re-extracts inline #tags with regexes over
+    // every note, so sharing one call between the guard and the chips
+    // below halves that work per sidebar build.
+    final tagCounts = controller.tagCounts;
 
     return Container(
       color: dark ? const Color(0xFF232323) : const Color(0xFFF3F3F3),
@@ -189,7 +193,7 @@ class _SidebarState extends State<Sidebar> {
               ],
             ),
           ),
-          if (controller.tagCounts.isNotEmpty) _tagChips(context),
+          if (tagCounts.isNotEmpty) _tagChips(context, tagCounts),
           Expanded(
             child: notes.isEmpty
                 ? Center(
@@ -354,9 +358,10 @@ class _SidebarState extends State<Sidebar> {
     );
   }
 
-  Widget _tagChips(BuildContext context) {
+  Widget _tagChips(
+      BuildContext context, List<MapEntry<String, int>> counts) {
     final c = widget.controller;
-    final tags = c.tagCounts.take(12).toList();
+    final tags = counts.take(12).toList();
     return Container(
       height: 34,
       padding: const EdgeInsets.symmetric(horizontal: 12),

@@ -368,6 +368,18 @@ class NotesController extends ChangeNotifier {
     updateNote(note);
   }
 
+  /// Live canvas updates during an in-progress gesture (move/resize/rotate
+  /// drags, eraser sweeps): applies the strokes and schedules persistence
+  /// but skips the timestamp bump and notifyListeners. Pointer-move events
+  /// fire at high frequency and the canvas already repaints itself via its
+  /// own setState — notifying here would rebuild the whole app (sidebar
+  /// sort/filter, thumbnails, editor pane) on every event. The gesture-end
+  /// commit in the canvas notifies once.
+  void setStrokesLive(Note note, List<StrokeItem> strokes) {
+    note.strokes = strokes;
+    _scheduleSave();
+  }
+
   void setColor(Note note, int index) {
     note.colorIndex = index;
     updateNote(note);
@@ -467,6 +479,8 @@ class NotesController extends ChangeNotifier {
             angle: s.angle,
             text: s.text,
             locked: s.locked,
+            rough: s.rough,
+            fontFamily: s.fontFamily,
           ),
       ],
       formats: List.of(note.formats),
