@@ -115,7 +115,12 @@ class _HomePageState extends State<HomePage> {
         bindings: {
           const SingleActivator(LogicalKeyboardKey.keyN, control: true):
               controller.createNote,
+          const SingleActivator(LogicalKeyboardKey.keyN, meta: true):
+              controller.createNote,
           const SingleActivator(LogicalKeyboardKey.keyF, control: true): () {
+            _searchFocus.requestFocus();
+          },
+          const SingleActivator(LogicalKeyboardKey.keyF, meta: true): () {
             _searchFocus.requestFocus();
           },
           const SingleActivator(LogicalKeyboardKey.keyF,
@@ -123,7 +128,14 @@ class _HomePageState extends State<HomePage> {
             controller.clearFilters();
             _searchFocus.requestFocus();
           },
+          const SingleActivator(LogicalKeyboardKey.keyF,
+              meta: true, shift: true): () {
+            controller.clearFilters();
+            _searchFocus.requestFocus();
+          },
           const SingleActivator(LogicalKeyboardKey.keyK, control: true):
+              _quickCapture,
+          const SingleActivator(LogicalKeyboardKey.keyK, meta: true):
               _quickCapture,
         },
         child: Focus(
@@ -193,7 +205,7 @@ class _HomePageState extends State<HomePage> {
                 ),
               ),
               Text(
-                'Ctrl+Shift+F to search · Ctrl+K quick capture',
+                'Search: Ctrl+Shift+F · Quick capture: Ctrl+K (⌘ on Mac)',
                 style: TextStyle(
                   fontSize: 11,
                   color: scheme.onTertiaryContainer

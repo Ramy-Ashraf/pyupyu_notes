@@ -4,7 +4,9 @@ A Flutter desktop app inspired by the Windows Sticky Notes / Fluent design:
 a sidebar list of colored notes with search, pinning and instant autosave —
 plus a **Draw mode** on every note for sketching diagrams.
 
-![platform](https://img.shields.io/badge/platform-Windows-blue)
+Runs on **Windows, Linux and macOS** from one codebase.
+
+![platform](https://img.shields.io/badge/platform-Windows_%7C_Linux_%7C_macOS-blue)
 
 ## Features
 
@@ -91,16 +93,22 @@ plus a **Draw mode** on every note for sketching diagrams.
 
 ```sh
 flutter pub get
-flutter run -d windows
+flutter run -d windows    # Windows
+flutter run -d linux      # Linux
+flutter run -d macos      # macOS
 ```
+
+Linux needs the desktop toolchain once:
+`sudo apt install clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev`.
+macOS needs Xcode.
 
 ## Build a release executable
 
 ```sh
-flutter build windows --release
+flutter build windows --release   # build\windows\x64\runner\Release\notes_app.exe
+flutter build linux --release     # build/linux/x64/release/bundle/
+flutter build macos --release     # build/macos/Build/Products/Release/
 ```
-
-The exe lands in `build\windows\x64\runner\Release\notes_app.exe`.
 
 ## Testing
 

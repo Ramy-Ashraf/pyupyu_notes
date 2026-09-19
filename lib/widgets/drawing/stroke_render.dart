@@ -28,8 +28,20 @@ TextPainter layoutTextLabel(StrokeItem s, {Color? color}) {
 }
 
 /// Bounding box of a stroke's unrotated geometry, used as the local frame
-/// for selection and transforms.
+/// for selection and transforms. Padded past the raw ink so the sketchy
+/// wobble and hit-testing have room; the visible selection frame uses the
+/// tight [strokeTightBounds] instead so it hugs the shape.
 Rect strokeLocalBounds(StrokeItem s) {
+  final raw = strokeTightBounds(s);
+  if (raw == Rect.zero) return raw;
+  if (s.type == StrokeType.text) return raw.inflate(3);
+  return raw.inflate(s.width / 2 + 4);
+}
+
+/// Unpadded geometry bounds of a stroke: the frame the selection outline
+/// and transform handles are drawn (and hit-tested) in, so they sit on the
+/// shape instead of floating around it.
+Rect strokeTightBounds(StrokeItem s) {
   if (s.points.isEmpty) return Rect.zero;
   if (s.type == StrokeType.text && (s.text?.isNotEmpty ?? false)) {
     final tp = layoutTextLabel(s);
@@ -38,18 +50,16 @@ Rect strokeLocalBounds(StrokeItem s) {
       s.points.first.dy,
       tp.width,
       tp.height,
-    ).inflate(3);
+    );
   }
   if (s.type == StrokeType.sticky && s.points.length >= 2) {
-    return Rect.fromPoints(s.points[0], s.points[1])
-        .inflate(s.width / 2 + 4);
+    return Rect.fromPoints(s.points[0], s.points[1]);
   }
   var r = Rect.fromPoints(s.points.first, s.points.first);
   for (final p in s.points) {
     r = r.expandToInclude(Rect.fromPoints(p, p));
   }
-  // +4 covers the rough outline's wobble beyond the pure geometry.
-  return r.inflate(s.width / 2 + 4);
+  return r;
 }
 
 /// Axis-aligned bounding box in world space, accounting for [StrokeItem.angle].
@@ -109,6 +119,11 @@ class SelectionBox {
 
 SelectionBox selectionBoxFor(StrokeItem s) =>
     SelectionBox(strokeLocalBounds(s), s.angle);
+
+/// Selection frame that hugs the shape: drives the painted outline, the
+/// transform handles and their hit-testing.
+SelectionBox tightSelectionBoxFor(StrokeItem s) =>
+    SelectionBox(strokeTightBounds(s), s.angle);
 
 /// Draws one stroke onto [canvas]. Used by the main canvas painter and the
 /// sidebar thumbnails. Shapes render in a sketchy Excalidraw-like style:

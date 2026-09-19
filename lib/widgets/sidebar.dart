@@ -567,14 +567,16 @@ class _SidebarState extends State<Sidebar> {
 
   void _showShortcuts(BuildContext context) {
     const rows = [
-      ('Ctrl+N', 'New note'),
-      ('Ctrl+F / Ctrl+Shift+F', 'Search notes'),
-      ('Ctrl+B / I / U', 'Bold / italic / underline'),
+      ('Ctrl+N / ⌘N', 'New note'),
+      ('Ctrl+F / ⌘F', 'Search notes'),
+      ('Ctrl+Shift+F', 'Search + clear filters'),
+      ('Ctrl+K / ⌘K', 'Quick capture'),
+      ('Ctrl+B / I / U', 'Bold / italic / underline (⌘ on Mac)'),
       ('Enter', 'Continue (or exit) a list'),
       ('Tab / Shift+Tab', 'Next / previous table cell'),
       ('Enter (in table)', 'Row below (empty row exits)'),
-      ('Ctrl+Z / Y', 'Undo / redo (text & canvas)'),
-      ('Ctrl+D', 'Duplicate selected stroke'),
+      ('Ctrl+Z / Y', 'Undo / redo (text & canvas, ⌘ on Mac)'),
+      ('Ctrl+D / ⌘D', 'Duplicate selected stroke'),
       ('Delete', 'Delete selected stroke'),
       ('Drag empty canvas', 'Marquee-select shapes'),
       ('Handles', 'Resize / rotate selection'),

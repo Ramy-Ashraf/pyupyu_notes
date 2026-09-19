@@ -44,13 +44,9 @@ class DiagramCanvas extends StatefulWidget {
 
 class _DiagramCanvasState extends State<DiagramCanvas> {
   CanvasTool _tool = CanvasTool.pen;
-  late Color _ink = WidgetsBinding
-              .instance.platformDispatcher.platformBrightness ==
-          Brightness.dark
-      ? const Color(0xFFF5F5F5)
-      : const Color(0xFF1F1F1F);
+  Color _ink = const Color(0xFF000000);
   double _width = 4;
-  int _fillStyle = FillStyles.hachure;
+  int _fillStyle = -1; // None: new shapes are outlines only.
   int _dashStyle = DashStyles.solid;
   bool _showGrid = true;
   bool _snapToGrid = false;
@@ -201,7 +197,7 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
             _selectedStrokes.length == 1 ? _selectedStrokes.first : null;
         var handled = false;
         if (single != null && !single.locked) {
-          final box = selectionBoxFor(single);
+          final box = tightSelectionBoxFor(single);
           final pl = box.toLocal(w);
           final tol = 7 / _scale;
           final rotLocal = Offset(
@@ -238,8 +234,8 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
             }
             _startMoveDrag(w);
           } else if (single != null &&
-              selectionBoxFor(single).localRect
-                  .contains(selectionBoxFor(single).toLocal(w))) {
+              tightSelectionBoxFor(single).localRect.contains(
+                  tightSelectionBoxFor(single).toLocal(w))) {
             // Dragging anywhere inside the single-selection box moves it.
             if (!single.locked) _startMoveDrag(w);
           } else {
@@ -598,7 +594,7 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
   void _applyResize(Offset w) {
     final orig = _resizeOriginal;
     if (orig == null) return;
-    final box = selectionBoxFor(orig);
+    final box = tightSelectionBoxFor(orig);
     final r = box.localRect;
     final pl = box.toLocal(w);
     final h = _resizeHandle;
@@ -694,7 +690,7 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
         _labelField == null &&
         _selectedStrokes.length == 1) {
       final single = _selectedStrokes.first;
-      final box = selectionBoxFor(single);
+      final box = tightSelectionBoxFor(single);
       final pl = box.toLocal(_toWorld(e.localPosition));
       final tol = 7 / _scale;
       final rotLocal = Offset(
@@ -1351,10 +1347,16 @@ class _DiagramCanvasState extends State<DiagramCanvas> {
           ? const <ShortcutActivator, VoidCallback>{}
           : {
         const SingleActivator(LogicalKeyboardKey.keyZ, control: true): _undo,
+        const SingleActivator(LogicalKeyboardKey.keyZ, meta: true): _undo,
         const SingleActivator(LogicalKeyboardKey.keyY, control: true): _redo,
+        const SingleActivator(LogicalKeyboardKey.keyY, meta: true): _redo,
         const SingleActivator(LogicalKeyboardKey.keyZ, control: true,
             shift: true): _redo,
+        const SingleActivator(LogicalKeyboardKey.keyZ, meta: true,
+            shift: true): _redo,
         const SingleActivator(LogicalKeyboardKey.keyD, control: true):
+            _duplicateSelected,
+        const SingleActivator(LogicalKeyboardKey.keyD, meta: true):
             _duplicateSelected,
         const SingleActivator(LogicalKeyboardKey.delete): _deleteSelected,
         const SingleActivator(LogicalKeyboardKey.backspace): _deleteSelected,

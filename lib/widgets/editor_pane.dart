@@ -88,13 +88,16 @@ class _EditorPaneState extends State<EditorPane> {
                         style: TextStyle(fontSize: 11, color: onBar),
                       ),
                       if (note.dueAt != null)
-                        Text(
-                          'Due ${_dueLabel(note.dueAt!)}',
-                          overflow: TextOverflow.ellipsis,
-                          style: TextStyle(
-                            fontSize: 10,
-                            color: onBar,
-                            fontWeight: FontWeight.w600,
+                        InkWell(
+                          onTap: () => _showReminderDialog(note),
+                          child: Text(
+                            'Due ${_dueLabel(note.dueAt!)} · tap to change',
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 10,
+                              color: onBar,
+                              fontWeight: FontWeight.w600,
+                            ),
                           ),
                         ),
                     ],
@@ -300,6 +303,36 @@ class _EditorPaneState extends State<EditorPane> {
   }
 
   Future<void> _showReminderDialog(Note note) async {
+    if (note.dueAt != null) {
+      final action = await showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('Reminder'),
+          content: Text('Currently set to ${_dueLabel(note.dueAt!)}.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop('remove'),
+              child: const Text('Remove'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop('change'),
+              child: const Text('Change'),
+            ),
+          ],
+        ),
+      );
+      if (action == 'remove') {
+        widget.controller.clearDue(note);
+        setState(() {});
+        return;
+      }
+      if (action != 'change') return;
+      if (!mounted) return;
+    }
     var date = note.dueAt ?? DateTime.now().add(const Duration(hours: 1));
     final pickedDate = await showDatePicker(
       context: context,
@@ -987,12 +1020,18 @@ class _TextBodyState extends State<_TextBody> {
                 const SingleActivator(LogicalKeyboardKey.keyB,
                         control: true): () =>
                     _editor?.toggleFormat(FormatFlags.bold),
+                const SingleActivator(LogicalKeyboardKey.keyB, meta: true):
+                    () => _editor?.toggleFormat(FormatFlags.bold),
                 const SingleActivator(LogicalKeyboardKey.keyI,
                         control: true): () =>
                     _editor?.toggleFormat(FormatFlags.italic),
+                const SingleActivator(LogicalKeyboardKey.keyI, meta: true):
+                    () => _editor?.toggleFormat(FormatFlags.italic),
                 const SingleActivator(LogicalKeyboardKey.keyU,
                         control: true): () =>
                     _editor?.toggleFormat(FormatFlags.underline),
+                const SingleActivator(LogicalKeyboardKey.keyU, meta: true):
+                    () => _editor?.toggleFormat(FormatFlags.underline),
               },
               child: BodyEditor(
                 key: _editorKey,

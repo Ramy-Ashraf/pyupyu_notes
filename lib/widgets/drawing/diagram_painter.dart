@@ -86,23 +86,54 @@ class DiagramPainter extends CustomPainter {
     canvas.restore();
   }
 
-  /// Rotated outline of a selected stroke's frame.
+  /// Dashed selection frame hugging the shape: one continuous dash rhythm
+  /// around the whole perimeter so corners stay crisp. Screen-constant size.
   void _drawSelectionOutline(Canvas canvas, StrokeItem s) {
-    final path = Path()..addPolygon(selectionBoxFor(s).corners(), true);
-    canvas.drawPath(
-      path,
-      Paint()
-        ..color = selectionColor
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.2 / scale,
-    );
+    final corners = tightSelectionBoxFor(s).corners();
+    final paint = Paint()
+      ..color = selectionColor
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.4 / scale
+      ..strokeCap = StrokeCap.butt;
+    final on = 5.0 / scale;
+    final off = 3.5 / scale;
+    final period = on + off;
+    final pts = [...corners, corners.first];
+    var phase = 0.0;
+    for (var i = 0; i < pts.length - 1; i++) {
+      final a = pts[i];
+      final b = pts[i + 1];
+      final len = (b - a).distance;
+      if (len <= 0) continue;
+      final dir = (b - a) / len;
+      var t = 0.0;
+      var guard = 0;
+      // The epsilon snap + iteration cap guarantee termination: without
+      // them a phase landing within one ulp below a boundary would make
+      // `t + remaining == t`, freezing the app on that frame.
+      while (t < len - 1e-9 && guard++ < 100000) {
+        final remaining =
+            phase < on ? on - phase : period - phase;
+        if (remaining <= 1e-6) {
+          phase = phase < on ? on : 0.0;
+          continue;
+        }
+        final t1 = math.min(t + remaining, len);
+        if (phase < on && t1 > t) {
+          canvas.drawLine(a + dir * t, a + dir * t1, paint);
+        }
+        phase = (phase + (t1 - t)) % period;
+        if (t1 <= t) break;
+        t = t1;
+      }
+    }
   }
 
   /// Excalidraw-style transform UI: 8 resize handles (corners + edge
   /// midpoints) and a round rotate handle above the top edge. Sizes are
   /// divided by [scale] so they stay constant on screen.
   void _drawSelectionHandles(Canvas canvas, StrokeItem s) {
-    final box = selectionBoxFor(s);
+    final box = tightSelectionBoxFor(s);
     final r = box.localRect;
     final half = 4.5 / scale;
     final fill = Paint()..color = const Color(0xFFFFFFFF);
